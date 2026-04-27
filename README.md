@@ -197,8 +197,19 @@ Templates usam `{{ ... }}` em strings e podem ler os seguintes objetos:
 | `params` | `{{ params.topicName }}` | Parametros declarados no path da rota. |
 | `query` | `{{ query.source }}` | Parametros da query string. |
 | `headers` | `{{ headers.x-tenant-id }}` | Headers HTTP convertidos para string. Headers nao UTF-8 sao ignorados. |
+| `form` | `{{ form.tenant }}` | Campos texto de requests `multipart/form-data`. |
+| `file` | `{{ file.filename }}` | Metadados do primeiro arquivo de requests `multipart/form-data`. |
 | `body` | `{{ body.customer.id }}` | Campos do body quando o request e JSON. |
 | `context` | `{{ context.requestId }}` | Metadados gerados pelo Postio. |
+
+Campos disponiveis em `file` para multipart:
+
+| Campo | Descricao |
+| --- | --- |
+| `fieldName` | Nome do campo multipart que recebeu o arquivo. |
+| `filename` | Nome original do arquivo enviado pelo cliente. |
+| `contentType` | Content-Type do arquivo, quando informado pelo cliente. |
+| `size` | Tamanho do arquivo em bytes. |
 
 Campos disponiveis em `context`:
 
@@ -232,6 +243,8 @@ key: "events/{{ context.requestId }}.json"
 - Body JSON valido vira JSON.
 - Body nao JSON, mas UTF-8, vira string.
 - Body nao UTF-8 retorna `400 Bad Request`.
+- Body `multipart/form-data` e parseado em `form` e `file`. Campos texto precisam ser UTF-8; arquivo pode ser binario.
+- Para multipart, `body` vira um objeto com metadados: `{"form": {...}, "file": {...}}`. O conteudo binario do arquivo nao entra em `body`.
 
 ## Recurso SNS
 
@@ -371,9 +384,37 @@ O destino `s3` grava um objeto em um bucket AWS S3.
 | `type` | sim | nao | Deve ser `s3`. |
 | `bucket` | sim | sim | Bucket onde o objeto sera criado. |
 | `key` | sim | sim | Chave do objeto dentro do bucket. |
-| `contentType` | nao | nao | Content-Type enviado ao S3. |
-| `object` | nao | sim | Conteudo gravado. Se ausente, usa o body completo do request. |
+| `contentType` | nao | sim | Content-Type enviado ao S3. Se ausente em multipart com arquivo, usa o content type do arquivo. |
+| `object` | nao | sim | Conteudo gravado. Se ausente, usa o body completo do request. Em multipart com arquivo, grava os bytes reais do arquivo. |
 | `metadata` | nao | sim | Metadados do objeto. Todos sao convertidos para string. |
+
+### S3 com upload multipart/form-data
+
+Quando o request e `multipart/form-data` e existe um campo de arquivo, o S3 grava os bytes do primeiro arquivo encontrado. Os campos texto ficam disponiveis em `form` e os metadados do arquivo em `file`.
+
+```yaml
+routes:
+  - id: upload-file
+    path: /upload/{tenant}
+    sink:
+      type: s3
+      bucket: my-ingestion-bucket
+      key: "{{ params.tenant }}/{{ form.folder }}/{{ file.filename }}"
+      metadata:
+        tenant: "{{ params.tenant }}"
+        folder: "{{ form.folder }}"
+        originalFilename: "{{ file.filename }}"
+```
+
+Chamada:
+
+```bash
+curl -X POST http://127.0.0.1:8080/upload/acme \
+  -F 'folder=invoices' \
+  -F 'file=@./invoice.pdf;type=application/pdf'
+```
+
+Se `object` for configurado em uma rota S3, o Postio grava o objeto renderizado em vez dos bytes do arquivo multipart.
 
 ### S3 simples
 

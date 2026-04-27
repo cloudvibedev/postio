@@ -47,6 +47,8 @@ utoipa-axum = "0.2"
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
 bytes = "1.11.1"
 schemars = "1"
+futures-util = "0.3"
+multer = "3"
 
 [dev-dependencies]
 http-body-util = "0.1"

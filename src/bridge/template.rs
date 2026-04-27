@@ -7,6 +7,8 @@ pub struct TemplateContext {
     pub params: BTreeMap<String, String>,
     pub query: BTreeMap<String, String>,
     pub headers: BTreeMap<String, String>,
+    pub form: BTreeMap<String, String>,
+    pub file: Value,
     pub body: Value,
     pub context: BTreeMap<String, String>,
 }
@@ -68,6 +70,7 @@ fn whole_template_expression(value: &str) -> Option<&str> {
         .strip_prefix("{{")
         .and_then(|value| value.strip_suffix("}}"))
         .map(str::trim)
+        .filter(|expression| !expression.contains("{{") && !expression.contains("}}"))
 }
 
 fn lookup(expression: &str, ctx: &TemplateContext) -> Option<Value> {
@@ -77,6 +80,8 @@ fn lookup(expression: &str, ctx: &TemplateContext) -> Option<Value> {
         "params" => lookup_string_map(&ctx.params, parts),
         "query" => lookup_string_map(&ctx.query, parts),
         "headers" => lookup_string_map(&ctx.headers, parts),
+        "form" => lookup_string_map(&ctx.form, parts),
+        "file" => lookup_json(&ctx.file, parts),
         "context" => lookup_string_map(&ctx.context, parts),
         "body" => lookup_json(&ctx.body, parts),
         _ => None,
@@ -112,6 +117,8 @@ mod tests {
             params: BTreeMap::from([("name".to_string(), "events".to_string())]),
             query: BTreeMap::new(),
             headers: BTreeMap::new(),
+            form: BTreeMap::new(),
+            file: Value::Null,
             body: serde_json::json!({"id": 42}),
             context: BTreeMap::new(),
         };
@@ -121,5 +128,28 @@ mod tests {
             "topic-events"
         );
         assert_eq!(render_string("{{ body.id }}", &ctx), serde_json::json!(42));
+    }
+
+    #[test]
+    fn renders_form_and_file_metadata() {
+        let ctx = TemplateContext {
+            params: BTreeMap::new(),
+            query: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            form: BTreeMap::from([("tenant".to_string(), "acme".to_string())]),
+            file: serde_json::json!({
+                "fieldName": "file",
+                "filename": "payload.bin",
+                "contentType": "application/octet-stream",
+                "size": 4
+            }),
+            body: Value::Null,
+            context: BTreeMap::new(),
+        };
+
+        assert_eq!(
+            render_to_string("{{ form.tenant }}/{{ file.filename }}", &ctx),
+            "acme/payload.bin"
+        );
     }
 }

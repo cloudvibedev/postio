@@ -13,8 +13,8 @@ use tracing::{info, info_span, Instrument};
 
 use crate::bridge::{
     config::SinkConfig,
-    dispatcher::{DispatchRequest, DispatchResponse, SinkDispatcher},
-    template::{render_to_string, render_value},
+    dispatcher::{DispatchRequest, DispatchResponse, SinkDispatcher, UploadedFile},
+    template::{render_to_string, render_value, TemplateContext},
 };
 
 pub struct AwsDispatcher {
@@ -197,16 +197,19 @@ impl AwsDispatcher {
     ) -> Result<DispatchResponse> {
         let bucket = render_to_string(&bucket, &request.template_context);
         let key = render_to_string(&key, &request.template_context);
-        let object = object
-            .map(|value| render_value(&value, &request.template_context))
-            .unwrap_or(request.body);
-        let body = stringify(object);
+        let (body, content_type) = s3_body_and_content_type(
+            content_type,
+            object,
+            request.file.as_ref(),
+            request.body,
+            &request.template_context,
+        );
         let response = self
             .s3
             .put_object()
             .bucket(bucket.clone())
             .key(key.clone())
-            .body(ByteStream::from(body.into_bytes()))
+            .body(ByteStream::from(body))
             .set_content_type(content_type)
             .set_metadata(render_metadata(metadata, &request.template_context))
             .send()
@@ -361,5 +364,100 @@ fn stringify(value: Value) -> String {
     match value {
         Value::String(value) => value,
         value => value.to_string(),
+    }
+}
+
+fn s3_body_and_content_type(
+    content_type: Option<String>,
+    object: Option<Value>,
+    file: Option<&UploadedFile>,
+    body: Value,
+    ctx: &TemplateContext,
+) -> (Vec<u8>, Option<String>) {
+    let content_type = content_type
+        .map(|value| render_to_string(&value, ctx))
+        .or_else(|| {
+            object
+                .is_none()
+                .then(|| file?.content_type.clone())
+                .flatten()
+        });
+    let body = match (object, file) {
+        (Some(object), _) => stringify(render_value(&object, ctx)).into_bytes(),
+        (None, Some(file)) => file.bytes.clone().to_vec(),
+        (None, None) => stringify(body).into_bytes(),
+    };
+
+    (body, content_type)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use bytes::Bytes;
+    use serde_json::Value;
+
+    use super::s3_body_and_content_type;
+    use crate::bridge::{dispatcher::UploadedFile, template::TemplateContext};
+
+    #[test]
+    fn s3_uses_uploaded_file_bytes_when_object_is_absent() {
+        let ctx = TemplateContext {
+            params: BTreeMap::new(),
+            query: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            form: BTreeMap::new(),
+            file: serde_json::json!({"filename": "payload.bin"}),
+            body: Value::Null,
+            context: BTreeMap::new(),
+        };
+        let file = UploadedFile {
+            field_name: Some("file".to_string()),
+            file_name: Some("payload.bin".to_string()),
+            content_type: Some("application/octet-stream".to_string()),
+            bytes: Bytes::from_static(&[0, 159, 146, 150]),
+        };
+
+        let (body, content_type) = s3_body_and_content_type(
+            None,
+            None,
+            Some(&file),
+            serde_json::json!({"ignored": true}),
+            &ctx,
+        );
+
+        assert_eq!(body, vec![0, 159, 146, 150]);
+        assert_eq!(content_type.as_deref(), Some("application/octet-stream"));
+    }
+
+    #[test]
+    fn s3_object_template_overrides_uploaded_file_bytes() {
+        let ctx = TemplateContext {
+            params: BTreeMap::new(),
+            query: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            form: BTreeMap::from([("tenant".to_string(), "acme".to_string())]),
+            file: Value::Null,
+            body: Value::Null,
+            context: BTreeMap::new(),
+        };
+        let file = UploadedFile {
+            field_name: Some("file".to_string()),
+            file_name: Some("payload.bin".to_string()),
+            content_type: Some("application/octet-stream".to_string()),
+            bytes: Bytes::from_static(&[0, 159, 146, 150]),
+        };
+
+        let (body, content_type) = s3_body_and_content_type(
+            Some("application/json".to_string()),
+            Some(serde_json::json!({"tenant": "{{ form.tenant }}"})),
+            Some(&file),
+            Value::Null,
+            &ctx,
+        );
+
+        assert_eq!(body, br#"{"tenant":"acme"}"#);
+        assert_eq!(content_type.as_deref(), Some("application/json"));
     }
 }

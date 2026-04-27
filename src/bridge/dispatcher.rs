@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use bytes::Bytes;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -9,6 +10,15 @@ pub struct DispatchRequest {
     pub route: RouteConfig,
     pub template_context: TemplateContext,
     pub body: Value,
+    pub file: Option<UploadedFile>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UploadedFile {
+    pub field_name: Option<String>,
+    pub file_name: Option<String>,
+    pub content_type: Option<String>,
+    pub bytes: Bytes,
 }
 
 #[derive(Debug, Clone, Serialize)]

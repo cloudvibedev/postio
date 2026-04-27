@@ -254,6 +254,70 @@ async fn configured_ingest_route_dispatches_to_sink() {
     assert_eq!(calls[0].body["hello"], "world");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multipart_ingest_route_extracts_form_fields_and_file() {
+    let dispatcher = Arc::new(RecordingDispatcher::default());
+    let bridge_config = BridgeConfig {
+        routes: vec![RouteConfig {
+            id: "upload".to_string(),
+            method: "POST".to_string(),
+            path: "/upload/{bucket}".to_string(),
+            sink: SinkConfig::S3 {
+                bucket: "{{ params.bucket }}".to_string(),
+                key: "{{ form.tenant }}/{{ file.filename }}".to_string(),
+                content_type: None,
+                object: None,
+                metadata: None,
+            },
+        }],
+    };
+    let router = setup_router_with_bridge_config(bridge_config, dispatcher.clone()).await;
+    let boundary = "postio-test-boundary";
+    let body = format!(
+        "--{boundary}\r\n\
+         Content-Disposition: form-data; name=\"tenant\"\r\n\
+         \r\n\
+         acme\r\n\
+         --{boundary}\r\n\
+         Content-Disposition: form-data; name=\"file\"; filename=\"hello.txt\"\r\n\
+         Content-Type: text/plain\r\n\
+         \r\n\
+         hello from multipart\r\n\
+         --{boundary}--\r\n"
+    );
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/upload/archive")
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(body))
+                .expect("build request"),
+        )
+        .await
+        .expect("request failed");
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let calls = dispatcher.calls.lock().expect("calls");
+    let call = calls.first().expect("dispatch call");
+    assert_eq!(call.template_context.params["bucket"], "archive");
+    assert_eq!(call.template_context.form["tenant"], "acme");
+    assert_eq!(call.template_context.file["filename"], "hello.txt");
+    assert_eq!(call.template_context.file["contentType"], "text/plain");
+    assert_eq!(call.body["form"]["tenant"], "acme");
+    assert_eq!(call.body["file"]["filename"], "hello.txt");
+    let file = call.file.as_ref().expect("uploaded file");
+    assert_eq!(file.field_name.as_deref(), Some("file"));
+    assert_eq!(file.file_name.as_deref(), Some("hello.txt"));
+    assert_eq!(file.content_type.as_deref(), Some("text/plain"));
+    assert_eq!(file.bytes.as_ref(), b"hello from multipart");
+}
+
 struct NoopDispatcher;
 
 #[async_trait::async_trait]
