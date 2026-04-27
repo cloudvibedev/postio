@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::{Arc, Mutex};
 
 use axum::{
     body::Body,
@@ -8,6 +9,10 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use postio::{
+    bridge::{
+        config::{BridgeConfig, RouteConfig, SinkConfig},
+        dispatcher::{DispatchRequest, DispatchResponse, SinkDispatcher},
+    },
     config::{otel_enabled_from_env, AppConfig, CorsConfig, DEFAULT_BODY_LIMIT_BYTES},
     libs::telemetry,
     routes::create_router,
@@ -19,17 +24,29 @@ use tower::ServiceExt;
 use tracing::info_span;
 
 async fn setup_router() -> Router {
+    setup_router_with_bridge_config(
+        BridgeConfig { routes: Vec::new() },
+        Arc::new(NoopDispatcher),
+    )
+    .await
+}
+
+async fn setup_router_with_bridge_config(
+    bridge_config: BridgeConfig,
+    dispatcher: Arc<dyn SinkDispatcher>,
+) -> Router {
     init_telemetry().await;
-    let state = AppState::new();
+    let state = AppState::new(dispatcher);
     let config = AppConfig {
         host: IpAddr::V4(Ipv4Addr::LOCALHOST),
         port: 0,
         cors: CorsConfig::Permissive,
         body_limit_bytes: DEFAULT_BODY_LIMIT_BYTES,
         otel_enabled: otel_enabled_from_env(),
+        bridge_config_path: "config/example.yaml".to_string(),
     };
 
-    create_router(state, &config)
+    create_router(state, &config, &bridge_config)
 }
 
 static TELEMETRY_GUARD: OnceCell<telemetry::TelemetryGuard> = OnceCell::const_new();
@@ -193,4 +210,80 @@ async fn echo_routes_reflect_request() {
 
     assert_eq!(head_response.status(), StatusCode::OK);
     flush_telemetry().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configured_ingest_route_dispatches_to_sink() {
+    let dispatcher = Arc::new(RecordingDispatcher::default());
+    let bridge_config = BridgeConfig {
+        routes: vec![RouteConfig {
+            id: "events".to_string(),
+            method: "POST".to_string(),
+            path: "/events/{topic}".to_string(),
+            sink: SinkConfig::Sns {
+                topic: Some("{{ params.topic }}".to_string()),
+                topic_arn: None,
+                subject: None,
+                message: None,
+                attributes: None,
+            },
+        }],
+    };
+    let router = setup_router_with_bridge_config(bridge_config, dispatcher.clone()).await;
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/events/orders?source=test")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"hello":"world"}"#))
+                .expect("build request"),
+        )
+        .await
+        .expect("request failed");
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body = response_json(response).await;
+    assert_eq!(body["routeId"], "events");
+    assert_eq!(body["sink"], "test");
+    let calls = dispatcher.calls.lock().expect("calls");
+    assert_eq!(calls[0].template_context.params["topic"], "orders");
+    assert_eq!(calls[0].template_context.query["source"], "test");
+    assert_eq!(calls[0].body["hello"], "world");
+}
+
+struct NoopDispatcher;
+
+#[async_trait::async_trait]
+impl SinkDispatcher for NoopDispatcher {
+    async fn dispatch(&self, request: DispatchRequest) -> anyhow::Result<DispatchResponse> {
+        Ok(response_for(request, "test"))
+    }
+}
+
+#[derive(Default)]
+struct RecordingDispatcher {
+    calls: Mutex<Vec<DispatchRequest>>,
+}
+
+#[async_trait::async_trait]
+impl SinkDispatcher for RecordingDispatcher {
+    async fn dispatch(&self, request: DispatchRequest) -> anyhow::Result<DispatchResponse> {
+        self.calls.lock().expect("calls").push(request.clone());
+        Ok(response_for(request, "test"))
+    }
+}
+
+fn response_for(request: DispatchRequest, sink: &str) -> DispatchResponse {
+    DispatchResponse {
+        route_id: request.route.id,
+        sink: sink.to_string(),
+        status: "accepted".to_string(),
+        message_id: Some("message-1".to_string()),
+        bucket: None,
+        key: None,
+        etag: None,
+    }
 }

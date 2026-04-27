@@ -1,9 +1,10 @@
 # postio
 
-Starter project for building APIs with Axum and OpenTelemetry. It exposes:
+Postio is a configurable HTTP ingestion gateway built with Axum and OpenTelemetry. In v0 it routes `POST` requests to AWS SNS, SQS, and S3 sinks.
 
 - `/health` as a liveness endpoint that returns `200 OK` with a JSON status payload.
 - `/echo` to reflect the incoming request across all HTTP verbs with tracing spans per method when OTEL is enabled.
+- Configured ingestion routes from `POSTIO_CONFIG`.
 
 ## Template Bootstrap
 
@@ -30,11 +31,46 @@ If you want to override the detected name, pass it explicitly:
 2. Optionally set:
    - `APP_HOST` and `APP_PORT` (defaults: `127.0.0.1:8080`).
    - `APP_CORS_ALLOW_ORIGINS` (comma-separated or `*`) and `APP_BODY_LIMIT_BYTES`.
+   - `POSTIO_CONFIG` to point at a YAML/JSON route config (default: `config/example.yaml`).
    - `OTEL_ENABLED=false` to disable OpenTelemetry export and HTTP tracing middleware while keeping structured logs.
 3. Run:
    - `cargo run`
 
 Swagger UI is available at `/docs` with the generated OpenAPI contract.
+
+### Ingestion config
+
+v0 supports only `POST` routes and these sinks:
+
+- `sns`
+- `sqs`
+- `s3`
+
+Example:
+
+```yaml
+routes:
+  - id: topic-input
+    path: /events/{topic}
+    sink:
+      type: sns
+      topic: "{{ params.topic }}"
+
+  - id: queue-input
+    path: /queue
+    sink:
+      type: sqs
+      queueUrl: https://sqs.us-east-1.amazonaws.com/123456789012/my-queue
+
+  - id: file-input
+    path: /file/{bucket}/{filename}
+    sink:
+      type: s3
+      bucket: "{{ params.bucket }}"
+      key: "{{ params.filename }}"
+```
+
+Templates can read `params`, `query`, `headers`, `body`, and `context`.
 
 ### Artifact image
 

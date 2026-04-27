@@ -4,9 +4,10 @@ use tower_http::limit::RequestBodyLimitLayer;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::{config::AppConfig, state::AppState};
+use crate::{bridge::config::BridgeConfig, config::AppConfig, state::AppState};
 
 mod cors;
+pub mod ingest;
 pub mod system;
 
 #[derive(OpenApi)]
@@ -20,7 +21,7 @@ pub mod system;
 )]
 struct ApiDoc;
 
-pub fn create_router(state: AppState, config: &AppConfig) -> Router {
+pub fn create_router(state: AppState, config: &AppConfig, bridge_config: &BridgeConfig) -> Router {
     let (api_router, api) = utoipa_axum::router::OpenApiRouter::with_openapi(ApiDoc::openapi())
         .merge(system::router())
         .split_for_parts();
@@ -34,6 +35,8 @@ pub fn create_router(state: AppState, config: &AppConfig) -> Router {
     } else {
         api_router
     };
+
+    let api_router = api_router.merge(ingest::router(bridge_config));
 
     let api_router = api_router
         .layer(cors::build_cors_layer(&config.cors, None))

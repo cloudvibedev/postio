@@ -32,6 +32,7 @@ pub struct AppConfig {
     pub cors: CorsConfig,
     pub body_limit_bytes: usize,
     pub otel_enabled: bool,
+    pub bridge_config_path: String,
 }
 
 impl AppConfig {
@@ -53,6 +54,8 @@ impl AppConfig {
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_BODY_LIMIT_BYTES);
         let otel_enabled = otel_enabled_from_env();
+        let bridge_config_path =
+            std::env::var("POSTIO_CONFIG").unwrap_or_else(|_| "config/example.yaml".to_string());
 
         Ok(Self {
             host,
@@ -60,6 +63,7 @@ impl AppConfig {
             cors,
             body_limit_bytes,
             otel_enabled,
+            bridge_config_path,
         })
     }
 
