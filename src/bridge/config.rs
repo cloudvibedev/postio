@@ -48,6 +48,16 @@ pub enum SinkConfig {
     },
 }
 
+impl SinkConfig {
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            SinkConfig::Sns { .. } => "sns",
+            SinkConfig::Sqs { .. } => "sqs",
+            SinkConfig::S3 { .. } => "s3",
+        }
+    }
+}
+
 pub fn load_bridge_config(path: impl AsRef<Path>) -> Result<BridgeConfig> {
     let path = path.as_ref();
     let raw = fs::read_to_string(path)
@@ -119,5 +129,18 @@ routes:
         .expect("config parses");
 
         assert_eq!(config.routes.len(), 2);
+    }
+
+    #[test]
+    fn reports_sink_type_names() {
+        let sink = SinkConfig::S3 {
+            bucket: "bucket".to_string(),
+            key: "key".to_string(),
+            content_type: None,
+            object: None,
+            metadata: None,
+        };
+
+        assert_eq!(sink.type_name(), "s3");
     }
 }

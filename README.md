@@ -27,7 +27,7 @@ If you want to override the detected name, pass it explicitly:
 ### Quick start
 
 1. Optionally start local observability services:
-   - `docker compose up -d jaeger`
+   - `docker compose up -d jaeger grafana`
 2. Optionally set:
    - `APP_HOST` and `APP_PORT` (defaults: `127.0.0.1:8080`).
    - `APP_CORS_ALLOW_ORIGINS` (comma-separated or `*`) and `APP_BODY_LIMIT_BYTES`.
@@ -71,6 +71,27 @@ routes:
 ```
 
 Templates can read `params`, `query`, `headers`, `body`, and `context`.
+
+### Observability
+
+Postio exports OpenTelemetry traces through OTLP. The local compose stack starts Jaeger and Grafana with a preconfigured Jaeger datasource.
+
+- Grafana: `http://localhost:3001`
+- Jaeger: `http://localhost:16686`
+- OTLP HTTP endpoint: `http://localhost:4318`
+- OTLP gRPC endpoint: `http://localhost:4317`
+
+Useful spans:
+
+- `postio.ingest.request`
+- `postio.ingest.parse_body`
+- `postio.ingest.build_context`
+- `postio.ingest.dispatch`
+- `postio.aws.sns.publish`
+- `postio.aws.sqs.send_message`
+- `postio.aws.s3.put_object`
+
+Trace fields include `request_id`, `route_id`, `sink_type`, `http.route`, `http.target`, request body size, response status, sink status, and AWS response identifiers when available.
 
 ### Artifact image
 

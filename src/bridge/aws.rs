@@ -9,6 +9,7 @@ use aws_sdk_s3::{primitives::ByteStream, Client as S3Client};
 use aws_sdk_sns::{types::MessageAttributeValue as SnsAttribute, Client as SnsClient};
 use aws_sdk_sqs::{types::MessageAttributeValue as SqsAttribute, Client as SqsClient};
 use serde_json::Value;
+use tracing::{info, info_span, Instrument};
 
 use crate::bridge::{
     config::SinkConfig,
@@ -39,6 +40,8 @@ impl AwsDispatcher {
 #[async_trait]
 impl SinkDispatcher for AwsDispatcher {
     async fn dispatch(&self, request: DispatchRequest) -> Result<DispatchResponse> {
+        let route_id = request.route.id.clone();
+        let sink_type = request.route.sink.type_name();
         match request.route.sink.clone() {
             SinkConfig::Sns {
                 topic,
@@ -48,6 +51,11 @@ impl SinkDispatcher for AwsDispatcher {
                 attributes,
             } => {
                 self.publish_sns(request, topic, topic_arn, subject, message, attributes)
+                    .instrument(info_span!(
+                        "postio.aws.sns",
+                        route_id = %route_id,
+                        sink_type = %sink_type
+                    ))
                     .await
             }
             SinkConfig::Sqs {
@@ -57,6 +65,11 @@ impl SinkDispatcher for AwsDispatcher {
                 attributes,
             } => {
                 self.send_sqs(request, queue, queue_url, message, attributes)
+                    .instrument(info_span!(
+                        "postio.aws.sqs",
+                        route_id = %route_id,
+                        sink_type = %sink_type
+                    ))
                     .await
             }
             SinkConfig::S3 {
@@ -67,6 +80,11 @@ impl SinkDispatcher for AwsDispatcher {
                 metadata,
             } => {
                 self.put_s3(request, bucket, key, content_type, object, metadata)
+                    .instrument(info_span!(
+                        "postio.aws.s3",
+                        route_id = %route_id,
+                        sink_type = %sink_type
+                    ))
                     .await
             }
         }
@@ -102,8 +120,14 @@ impl AwsDispatcher {
             .set_message_attributes(render_sns_attributes(attributes, &request.template_context))
             .message(stringify(message))
             .send()
+            .instrument(info_span!("postio.aws.sns.publish"))
             .await
             .context("failed to publish sns message")?;
+        info!(
+            route_id = request.route.id.as_str(),
+            aws.sns.message_id = response.message_id.as_deref(),
+            "published sns message"
+        );
 
         Ok(DispatchResponse {
             route_id: request.route.id,
@@ -142,8 +166,14 @@ impl AwsDispatcher {
             .set_message_attributes(render_sqs_attributes(attributes, &request.template_context))
             .message_body(stringify(message))
             .send()
+            .instrument(info_span!("postio.aws.sqs.send_message"))
             .await
             .context("failed to send sqs message")?;
+        info!(
+            route_id = request.route.id.as_str(),
+            aws.sqs.message_id = response.message_id.as_deref(),
+            "sent sqs message"
+        );
 
         Ok(DispatchResponse {
             route_id: request.route.id,
@@ -180,8 +210,20 @@ impl AwsDispatcher {
             .set_content_type(content_type)
             .set_metadata(render_metadata(metadata, &request.template_context))
             .send()
+            .instrument(info_span!(
+                "postio.aws.s3.put_object",
+                s3.bucket = %bucket,
+                s3.key = %key
+            ))
             .await
             .context("failed to put s3 object")?;
+        info!(
+            route_id = request.route.id.as_str(),
+            s3.bucket = bucket.as_str(),
+            s3.key = key.as_str(),
+            s3.etag = response.e_tag.as_deref(),
+            "put s3 object"
+        );
 
         Ok(DispatchResponse {
             route_id: request.route.id,
@@ -209,6 +251,7 @@ impl AwsDispatcher {
                 .list_topics()
                 .set_next_token(next_token)
                 .send()
+                .instrument(info_span!("postio.aws.sns.list_topics", sns.topic = topic))
                 .await
                 .context("failed to list sns topics")?;
             if let Some(topic_arn) = response
@@ -243,6 +286,10 @@ impl AwsDispatcher {
             .get_queue_url()
             .queue_name(queue)
             .send()
+            .instrument(info_span!(
+                "postio.aws.sqs.get_queue_url",
+                sqs.queue = queue
+            ))
             .await
             .context("failed to resolve sqs queue url")?;
         let queue_url = response

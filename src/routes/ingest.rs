@@ -9,6 +9,7 @@ use axum::{
     Json, Router,
 };
 use serde_json::Value;
+use tracing::{info, info_span, Instrument};
 use uuid::Uuid;
 
 use crate::{
@@ -56,36 +57,95 @@ async fn handle_ingest(
     body: Bytes,
     route: Arc<RouteConfig>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let body = parse_body(&body)?;
-    let template_context = TemplateContext {
-        params,
-        query,
-        headers: headers_to_map(&headers),
-        body: body.clone(),
-        context: BTreeMap::from([
-            ("requestId".to_string(), Uuid::new_v4().to_string()),
-            ("timestamp".to_string(), chrono::Utc::now().to_rfc3339()),
-            ("method".to_string(), "POST".to_string()),
-            ("path".to_string(), uri.path().to_string()),
-            ("routeId".to_string(), route.id.clone()),
-        ]),
-    };
+    let request_id = Uuid::new_v4().to_string();
+    let route_id = route.id.clone();
+    let sink_type = route.sink.type_name();
+    let request_path = uri.path().to_string();
+    let request_body_bytes = body.len();
+    let ingest_span = info_span!(
+        "postio.ingest.request",
+        request_id = %request_id,
+        route_id = %route_id,
+        sink_type = %sink_type,
+        http.method = "POST",
+        http.route = %route.path,
+        http.target = %uri,
+        request.body_bytes = request_body_bytes,
+        response.status_code = tracing::field::Empty,
+        sink.status = tracing::field::Empty,
+    );
 
-    let response = state
-        .dispatcher()
-        .dispatch(DispatchRequest {
-            route: (*route).clone(),
-            template_context,
-            body,
-        })
-        .await?;
-    let status = if response.status == "created" {
-        StatusCode::CREATED
-    } else {
-        StatusCode::ACCEPTED
-    };
+    async move {
+        info!("ingest request received");
+        let body = {
+            let _span = info_span!("postio.ingest.parse_body").entered();
+            parse_body(&body)?
+        };
+        let body_kind = match &body {
+            Value::Null => "empty",
+            Value::Object(_) => "json_object",
+            Value::Array(_) => "json_array",
+            Value::String(_) => "text",
+            Value::Bool(_) | Value::Number(_) => "json_scalar",
+        };
+        info!(body.kind = body_kind, "request body parsed");
 
-    Ok((status, Json(response)))
+        let template_context = {
+            let _span = info_span!(
+                "postio.ingest.build_context",
+                path.params_count = params.len(),
+                query.params_count = query.len(),
+                headers.count = headers.len()
+            )
+            .entered();
+            TemplateContext {
+                params,
+                query,
+                headers: headers_to_map(&headers),
+                body: body.clone(),
+                context: BTreeMap::from([
+                    ("requestId".to_string(), request_id.clone()),
+                    ("timestamp".to_string(), chrono::Utc::now().to_rfc3339()),
+                    ("method".to_string(), "POST".to_string()),
+                    ("path".to_string(), request_path),
+                    ("routeId".to_string(), route_id.clone()),
+                ]),
+            }
+        };
+
+        let response = state
+            .dispatcher()
+            .dispatch(DispatchRequest {
+                route: (*route).clone(),
+                template_context,
+                body,
+            })
+            .instrument(info_span!(
+                "postio.ingest.dispatch",
+                route_id = %route_id,
+                sink_type = %sink_type
+            ))
+            .await?;
+        let status = if response.status == "created" {
+            StatusCode::CREATED
+        } else {
+            StatusCode::ACCEPTED
+        };
+        tracing::Span::current().record("response.status_code", status.as_u16());
+        tracing::Span::current().record("sink.status", response.status.as_str());
+        info!(
+            http.status_code = status.as_u16(),
+            sink.status = response.status.as_str(),
+            sink.message_id = response.message_id.as_deref(),
+            sink.bucket = response.bucket.as_deref(),
+            sink.key = response.key.as_deref(),
+            "ingest request completed"
+        );
+
+        Ok((status, Json(response)))
+    }
+    .instrument(ingest_span)
+    .await
 }
 
 fn parse_body(body: &[u8]) -> Result<Value, ApiError> {
