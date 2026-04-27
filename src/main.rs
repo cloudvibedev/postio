@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rust_api_template::{
+use postio::{
     config::AppConfig,
     db::{init_pool, run_migrations},
     libs::telemetry,
@@ -28,9 +28,6 @@ async fn main() -> Result<()> {
     let addr = config.listen_addr()?;
     let listener = TcpListener::bind(addr).await?;
     tracing::info!("listening on {}", addr);
-    if let Some(mcp_url) = config.mcp_endpoint_url() {
-        tracing::info!("mcp enabled at {}", mcp_url);
-    }
 
     axum::serve(listener, router).await?;
     Ok(())

@@ -7,7 +7,6 @@ use utoipa_swagger_ui::SwaggerUi;
 use crate::{config::AppConfig, state::AppState};
 
 mod cors;
-pub mod mcp;
 pub mod system;
 
 #[derive(OpenApi)]
@@ -40,11 +39,5 @@ pub fn create_router(state: AppState, config: &AppConfig) -> Router {
         .layer(cors::build_cors_layer(&config.cors, None))
         .layer(RequestBodyLimitLayer::new(config.body_limit_bytes));
 
-    let router = if config.mcp.enabled {
-        api_router.merge(mcp::router(&config.mcp))
-    } else {
-        api_router
-    };
-
-    router.with_state(state)
+    api_router.with_state(state)
 }

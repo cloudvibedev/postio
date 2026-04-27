@@ -1,10 +1,9 @@
-# rust-api-template
+# postio
 
 Starter project for building APIs with Axum, PostgreSQL, and OpenTelemetry. It exposes:
 
 - `/health` as a liveness endpoint that returns `200 OK` with a JSON status payload.
 - `/echo` to reflect the incoming request across all HTTP verbs with tracing spans per method when OTEL is enabled.
-- `/mcp` as an optional MCP Streamable HTTP endpoint for `health_check` and `echo_request` tools when enabled.
 
 ## Template Bootstrap
 
@@ -12,7 +11,9 @@ After creating a new repository from this template, run:
 
 - `./scripts/init-template.sh`
 
-The script uses the current repository directory name as the new Cargo package/bin name, updates the main hardcoded references (`Cargo.toml`, Rust imports, README, `.env.example`, and `Dockerfile.artifact`), then runs `cargo build` and `cargo test`.
+The script uses the current repository directory name as the new Cargo package/bin name, updates the main hardcoded references (`Cargo.toml`, Rust imports, README, `.env.example`, and `Dockerfile.artifact`), then runs `cargo build` and `OTEL_ENABLED=false cargo test`.
+
+When Docker is provided through a context such as Colima, the script exports that context socket as `DOCKER_HOST` so testcontainers can start the integration test services.
 
 If you want to override the detected name, pass it explicitly:
 
@@ -38,49 +39,17 @@ If you want to override the detected name, pass it explicitly:
    - `APP_HOST` and `APP_PORT` (defaults: `127.0.0.1:8080`).
    - `APP_CORS_ALLOW_ORIGINS` (comma-separated or `*`) and `APP_BODY_LIMIT_BYTES`.
    - `OTEL_ENABLED=false` to disable OpenTelemetry export and HTTP tracing middleware while keeping structured logs.
-   - `MCP_ENABLED=true` to expose the MCP endpoint.
-   - `MCP_PATH=/mcp` to change the MCP path.
-   - `MCP_ALLOWED_ORIGINS=*` to keep the MCP endpoint fully open, or provide a comma-separated allowlist if you want to restrict it.
 4. Run:
    - `cargo run`
 
 Migrations are managed by SQLx and executed on startup from `migrations/`.
 Swagger UI is available at `/docs` with the generated OpenAPI contract.
 
-### MCP HTTP
-
-This template can expose an MCP server over Streamable HTTP in stateless JSON mode.
-
-- It is disabled by default and only mounts when `MCP_ENABLED=true`.
-- The MCP endpoint is intentionally not included in `/openapi.json`.
-- CORS is permissive by default for both the REST API and MCP. Set `APP_CORS_ALLOW_ORIGINS` or `MCP_ALLOWED_ORIGINS` only if you want to restrict them.
-
-The first version exposes two tools:
-
-- `health_check` returns the service status and version.
-- `echo_request` mirrors `method`, `path`, `headers`, and `body` from the tool input.
-- When MCP is enabled, startup logs include the MCP endpoint URL.
-
-To test with the inspector:
-
-1. Start the API with MCP enabled:
-   - `MCP_ENABLED=true cargo run`
-2. Launch the inspector:
-   - `npx @modelcontextprotocol/inspector`
-3. Connect using Streamable HTTP:
-   - `http://127.0.0.1:8080/mcp`
-
-Current limitations:
-
-- no resources or prompts
-- no bearer auth
-- no SSE/session mode; `GET /mcp` returns `405 Method Not Allowed`
-
 ### Artifact image
 
 `Dockerfile.artifact` expects a prebuilt binary in `artifacts/<bin-name>/<arch>/` and accepts `BIN_NAME` as a build argument. Example:
 
-`docker build -f Dockerfile.artifact --build-arg TARGETARCH=amd64 --build-arg BIN_NAME=rust-api-template .`
+`docker build -f Dockerfile.artifact --build-arg TARGETARCH=amd64 --build-arg BIN_NAME=postio .`
 
 ### SQLx note
 
@@ -96,7 +65,7 @@ The SQLx query macros use the database schema at compile time. Make sure `DATABA
 
 This template is organized around four main layers:
 
-- `routes/`: transport and protocol adapters for HTTP and MCP
+- `routes/`: transport and protocol adapters for HTTP
 - `services/`: business rules and use-case orchestration
 - `repositories/`: persistence and external integration adapters
 - `dto/`: request/response contracts, validation, and data transformation structs
@@ -107,7 +76,7 @@ Preferred flow:
 
 Guidelines:
 
-- keep HTTP and MCP details inside `routes/`
+- keep HTTP details inside `routes/`
 - keep business decisions inside `services/`
 - keep SQLx, queues, and external API clients inside `repositories/`
 - keep payload contracts and transformation structs inside `dto/`
@@ -121,7 +90,7 @@ src/
   db.rs             # connection pool + migrations
   dto/              # request/response contracts and shared transport payloads
   repositories/     # DB, queue, cache, and external integration adapters
-  routes/           # HTTP and MCP transport handlers plus wiring
+  routes/           # HTTP transport handlers plus wiring
   services/         # business rules and use-case orchestration
 ```
 
