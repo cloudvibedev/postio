@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 
 pub const DEFAULT_BODY_LIMIT_BYTES: usize = 1_048_576;
 
@@ -27,7 +27,6 @@ impl CorsConfig {
 
 #[derive(Clone, Debug)]
 pub struct AppConfig {
-    pub database_url: String,
     pub host: IpAddr,
     pub port: u16,
     pub cors: CorsConfig,
@@ -37,9 +36,6 @@ pub struct AppConfig {
 
 impl AppConfig {
     pub fn from_env() -> Result<Self> {
-        let database_url = std::env::var("DATABASE_URL")
-            .map_err(|_| anyhow!("DATABASE_URL environment variable is required"))?;
-
         let host = std::env::var("APP_HOST")
             .ok()
             .and_then(|value| value.parse::<IpAddr>().ok())
@@ -59,7 +55,6 @@ impl AppConfig {
         let otel_enabled = otel_enabled_from_env();
 
         Ok(Self {
-            database_url,
             host,
             port,
             cors,

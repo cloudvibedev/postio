@@ -1,15 +1,4 @@
 services:
-  postgres:
-    image: pgvector/pgvector:pg18
-    environment:
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_USER: postgres
-      POSTGRES_DB: postgres
-    ports:
-      - 5453:5432
-    volumes:
-      - postgres_data:/var/lib/postgresql
-
   jaeger:
     image: jaegertracing/jaeger:latest
     ports:
@@ -24,9 +13,6 @@ services:
       COLLECTOR_OTLP_HTTP_HOST_PORT: 0.0.0.0:4318
     networks:
       - monitoring
-volumes:
-  postgres_data:
-  jaeger_data:
 
 networks:
   monitoring:

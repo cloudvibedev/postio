@@ -5,13 +5,6 @@ set -euo pipefail
 ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT_DIR"
 
-if [ -z "${DOCKER_HOST:-}" ] && command -v docker >/dev/null 2>&1; then
-  DOCKER_CONTEXT_HOST="$(docker context inspect --format '{{ (index .Endpoints "docker").Host }}' 2>/dev/null || true)"
-  if [ -n "$DOCKER_CONTEXT_HOST" ]; then
-    export DOCKER_HOST="$DOCKER_CONTEXT_HOST"
-  fi
-fi
-
 TARGET_NAME="${1:-$(basename "$ROOT_DIR")}"
 PACKAGE_NAME="$(
   printf '%s' "$TARGET_NAME" \

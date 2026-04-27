@@ -1,7 +1,4 @@
-use std::{
-    net::{IpAddr, Ipv4Addr},
-    time::Duration,
-};
+use std::net::{IpAddr, Ipv4Addr};
 
 use axum::{
     body::Body,
@@ -12,39 +9,19 @@ use axum::{
 use http_body_util::BodyExt;
 use postio::{
     config::{otel_enabled_from_env, AppConfig, CorsConfig, DEFAULT_BODY_LIMIT_BYTES},
-    db::{init_pool, run_migrations},
     libs::telemetry,
-    repositories::database::DatabaseRepository,
     routes::create_router,
     state::AppState,
 };
 use serde_json::Value;
-use sqlx::PgPool;
-use testcontainers::{
-    core::{IntoContainerPort, WaitFor},
-    runners::AsyncRunner,
-    GenericImage, ImageExt,
-};
 use tokio::sync::OnceCell;
 use tower::ServiceExt;
 use tracing::info_span;
 
 async fn setup_router() -> Router {
-    let database_url = database_url().await;
     init_telemetry().await;
-    let pool = init_pool_with_retry(&database_url).await;
-    let pool_for_migrations = pool.clone();
-    MIGRATIONS
-        .get_or_init(|| async move {
-            run_migrations(&pool_for_migrations)
-                .await
-                .expect("failed to run database migrations");
-        })
-        .await;
-
-    let state = AppState::new(DatabaseRepository::new(pool));
+    let state = AppState::new();
     let config = AppConfig {
-        database_url,
         host: IpAddr::V4(Ipv4Addr::LOCALHOST),
         port: 0,
         cors: CorsConfig::Permissive,
@@ -55,37 +32,8 @@ async fn setup_router() -> Router {
     create_router(state, &config)
 }
 
-static MIGRATIONS: OnceCell<()> = OnceCell::const_new();
-static TEST_DB_URL: OnceCell<String> = OnceCell::const_new();
 static TELEMETRY_GUARD: OnceCell<telemetry::TelemetryGuard> = OnceCell::const_new();
-static OTEL_ENDPOINT: OnceCell<String> = OnceCell::const_new();
 static ENV_LOADED: OnceCell<()> = OnceCell::const_new();
-
-async fn database_url() -> String {
-    TEST_DB_URL
-        .get_or_init(|| async {
-            let image = GenericImage::new("pgvector/pgvector", "pg18")
-                .with_exposed_port(5432.tcp())
-                .with_wait_for(WaitFor::message_on_stdout(
-                    "database system is ready to accept connections",
-                ))
-                .with_env_var("POSTGRES_PASSWORD", "postgres")
-                .with_env_var("POSTGRES_USER", "postgres")
-                .with_env_var("POSTGRES_DB", "postgres");
-            let container = image
-                .start()
-                .await
-                .expect("failed to start postgres container");
-            let container = Box::leak(Box::new(container));
-            let port = container
-                .get_host_port_ipv4(5432)
-                .await
-                .expect("failed to resolve postgres mapped port");
-            format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres")
-        })
-        .await
-        .clone()
-}
 
 async fn response_json(response: Response) -> Value {
     let body = response
@@ -129,34 +77,7 @@ async fn init_telemetry() {
 }
 
 async fn otel_endpoint() -> Option<String> {
-    if std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").is_ok()
-        || std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok()
-    {
-        return None;
-    }
-
-    Some(
-        OTEL_ENDPOINT
-            .get_or_init(|| async {
-                let image = GenericImage::new("jaegertracing/jaeger", "latest")
-                    .with_exposed_port(4317.tcp())
-                    .with_wait_for(WaitFor::seconds(3))
-                    .with_env_var("COLLECTOR_OTLP_ENABLED", "true")
-                    .with_env_var("COLLECTOR_OTLP_GRPC_HOST_PORT", "0.0.0.0:4317");
-                let container = image
-                    .start()
-                    .await
-                    .expect("failed to start jaeger container");
-                let container = Box::leak(Box::new(container));
-                let port = container
-                    .get_host_port_ipv4(4317)
-                    .await
-                    .expect("failed to resolve jaeger mapped port");
-                format!("http://127.0.0.1:{port}")
-            })
-            .await
-            .clone(),
-    )
+    std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok()
 }
 
 async fn flush_telemetry() {
@@ -176,22 +97,6 @@ async fn load_env() {
 fn set_env_if_missing(key: &str, value: &str) {
     if std::env::var(key).is_err() {
         std::env::set_var(key, value);
-    }
-}
-
-async fn init_pool_with_retry(database_url: &str) -> PgPool {
-    let mut attempts = 0;
-    loop {
-        match init_pool(database_url).await {
-            Ok(pool) => return pool,
-            Err(err) => {
-                attempts += 1;
-                if attempts >= 10 {
-                    panic!("failed to initialize database pool after {attempts} attempts: {err}");
-                }
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
-        }
     }
 }
 
