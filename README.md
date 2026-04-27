@@ -1,52 +1,34 @@
 # postio
 
-Postio is a configurable HTTP ingestion gateway built with Axum and OpenTelemetry. In v0 it routes `POST` requests to AWS SNS, SQS, and S3 sinks.
+Postio e uma API de injestao de dados configuravel. Ela recebe chamadas HTTP `POST` e encaminha o payload para destinos de entrada como AWS SNS, AWS SQS e AWS S3.
 
-- `/health` as a liveness endpoint that returns `200 OK` with a JSON status payload.
-- `/echo` to reflect the incoming request across all HTTP verbs with tracing spans per method when OTEL is enabled.
-- Configured ingestion routes from `POSTIO_CONFIG`.
+O objetivo da v0 e ser simples de operar: uma aplicacao, um arquivo YAML/JSON, varias rotas, varios destinos.
 
-## Template Bootstrap
+## Sumario
 
-After creating a new repository from this template, run:
+- [Visao geral](#visao-geral)
+- [Recursos da v0](#recursos-da-v0)
+- [Instalacao](#instalacao)
+- [Executando localmente](#executando-localmente)
+- [Configuracao da aplicacao](#configuracao-da-aplicacao)
+- [Arquivo de rotas](#arquivo-de-rotas)
+- [Templates](#templates)
+- [Recurso SNS](#recurso-sns)
+- [Recurso SQS](#recurso-sqs)
+- [Recurso S3](#recurso-s3)
+- [Exemplos simples](#exemplos-simples)
+- [Exemplo complexo](#exemplo-complexo)
+- [Chamando a API](#chamando-a-api)
+- [Observabilidade](#observabilidade)
+- [Operacao](#operacao)
+- [Testes e desenvolvimento](#testes-e-desenvolvimento)
+- [Arquitetura](#arquitetura)
+- [Limitacoes da v0](#limitacoes-da-v0)
+- [Troubleshooting](#troubleshooting)
 
-- `./scripts/init-template.sh`
+## Visao geral
 
-The script uses the current repository directory name as the new Cargo package/bin name, updates the main hardcoded references (`Cargo.toml`, Rust imports, README, `.env.example`, and `Dockerfile.artifact`), then runs `cargo build` and `OTEL_ENABLED=false cargo test`.
-
-If you want to override the detected name, pass it explicitly:
-
-- `./scripts/init-template.sh my-new-api`
-
-## Getting Started
-
-### Prerequisites
-
-- Rust toolchain (stable).
-
-### Quick start
-
-1. Optionally start local observability services:
-   - `docker compose up -d jaeger grafana`
-2. Optionally set:
-   - `APP_HOST` and `APP_PORT` (defaults: `127.0.0.1:8080`).
-   - `APP_CORS_ALLOW_ORIGINS` (comma-separated or `*`) and `APP_BODY_LIMIT_BYTES`.
-   - `POSTIO_CONFIG` to point at a YAML/JSON route config (default: `config/example.yaml`).
-   - `OTEL_ENABLED=false` to disable OpenTelemetry export and HTTP tracing middleware while keeping structured logs.
-3. Run:
-   - `cargo run`
-
-Swagger UI is available at `/docs` with the generated OpenAPI contract.
-
-### Ingestion config
-
-v0 supports only `POST` routes and these sinks:
-
-- `sns`
-- `sqs`
-- `s3`
-
-Example:
+Postio funciona como uma ponte entre HTTP e servicos de injestao. Em vez de criar uma API especifica para cada topico, fila ou arquivo, voce declara as rotas em um arquivo de configuracao:
 
 ```yaml
 routes:
@@ -70,69 +52,723 @@ routes:
       key: "{{ params.filename }}"
 ```
 
-Templates can read `params`, `query`, `headers`, `body`, and `context`.
+Cada rota recebe o request, monta um contexto com `params`, `query`, `headers`, `body` e `context`, renderiza templates e envia o dado para o destino configurado.
 
-### Observability
+## Recursos da v0
 
-Postio exports OpenTelemetry traces through OTLP. The local compose stack starts Jaeger and Grafana with a preconfigured Jaeger datasource.
+- Rotas dinamicas `POST` configuradas por YAML ou JSON.
+- Destinos AWS SNS, AWS SQS e AWS S3.
+- Templates em propriedades do destino usando path params, query string, headers, body JSON e metadados do request.
+- Resposta padronizada com `route_id`, `sink`, `status` e identificadores do destino quando disponiveis.
+- Tracing OpenTelemetry com spans por etapa da injestao e por chamada AWS.
+- `/health` para liveness.
+- `/docs` com Swagger UI e `/openapi.json`.
+- `/echo` para debug de requests.
+
+## Instalacao
+
+### Pre-requisitos
+
+- Rust stable.
+- Cargo.
+- Credenciais AWS validas para os destinos usados.
+- Docker e Docker Compose, apenas se quiser subir Grafana/Jaeger localmente.
+
+### Clonar e preparar
+
+```bash
+git clone <repo-url>
+cd postio
+cargo build
+```
+
+### Configurar ambiente
+
+Copie o arquivo de exemplo se quiser iniciar com variaveis locais:
+
+```bash
+cp .env.example .env
+```
+
+As credenciais AWS seguem a cadeia padrao do AWS SDK. Exemplos comuns:
+
+```bash
+export AWS_REGION=us-east-1
+export AWS_PROFILE=default
+```
+
+Ou, em ambientes automatizados:
+
+```bash
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+export AWS_SESSION_TOKEN=...
+export AWS_REGION=us-east-1
+```
+
+## Executando localmente
+
+### Sem observabilidade local
+
+```bash
+export POSTIO_CONFIG=config/example.yaml
+export OTEL_ENABLED=false
+cargo run
+```
+
+Por padrao a API sobe em `127.0.0.1:8080`.
+
+### Com Grafana e Jaeger
+
+```bash
+docker compose up -d jaeger grafana
+export POSTIO_CONFIG=config/example.yaml
+cargo run
+```
+
+Servicos locais:
+
+- API: `http://127.0.0.1:8080`
+- Health: `http://127.0.0.1:8080/health`
+- Swagger UI: `http://127.0.0.1:8080/docs`
+- OpenAPI: `http://127.0.0.1:8080/openapi.json`
+- Grafana: `http://localhost:3001`
+- Jaeger: `http://localhost:16686`
+
+## Configuracao da aplicacao
+
+| Variavel | Padrao | Descricao |
+| --- | --- | --- |
+| `APP_HOST` | `127.0.0.1` | Host onde o servidor HTTP escuta. Use `0.0.0.0` em container. |
+| `APP_PORT` | `8080` | Porta HTTP. |
+| `APP_CORS_ALLOW_ORIGINS` | permissivo | Lista separada por virgula ou `*`. |
+| `APP_BODY_LIMIT_BYTES` | `1048576` | Limite maximo do corpo do request em bytes. |
+| `POSTIO_CONFIG` | `config/example.yaml` | Caminho do arquivo YAML/JSON com as rotas. |
+| `OTEL_ENABLED` | `true` | Habilita tracing OpenTelemetry. Use `false` para logs sem export OTEL. |
+| `OTEL_SERVICE_NAME` | `postio` em `.env.example` | Nome do servico nos traces. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` em `.env.example` | Endpoint OTLP base. |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | `http://localhost:4318/v1/traces` em `.env.example` | Endpoint OTLP HTTP para traces. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` em `.env.example` | Protocolo OTLP. |
+| `OTEL_TRACES_SAMPLER` | `always_on` em `.env.example` | Politica de amostragem dos traces. |
+| `OTEL_RESOURCE_ATTRIBUTES` | `service.version=0.1.0,deployment.environment=local` em `.env.example` | Atributos fixos adicionados ao recurso OTEL. |
+
+## Arquivo de rotas
+
+O arquivo pode ser YAML ou JSON. A extensao `.json` ativa parser JSON; qualquer outra extensao usa YAML.
+
+Estrutura raiz:
+
+```yaml
+routes:
+  - id: route-id
+    method: POST
+    path: /path/{param}
+    sink:
+      type: sns
+      topic: my-topic
+```
+
+### Propriedades de `routes[]`
+
+| Propriedade | Obrigatoria | Padrao | Descricao |
+| --- | --- | --- | --- |
+| `id` | sim | - | Identificador unico da rota. Aparece em logs, spans e resposta. |
+| `method` | nao | `POST` | Metodo HTTP. Na v0 apenas `POST` e registrado; outros metodos sao ignorados. |
+| `path` | sim | - | Path Axum da rota. Deve iniciar com `/`. Params usam `{nome}`. |
+| `sink` | sim | - | Destino que recebera o dado. Pode ser `sns`, `sqs` ou `s3`. |
+
+Exemplo com path params:
+
+```yaml
+routes:
+  - id: dynamic-topic
+    path: /topic/{topicName}
+    sink:
+      type: sns
+      topic: "{{ params.topicName }}"
+```
+
+## Templates
+
+Templates usam `{{ ... }}` em strings e podem ler os seguintes objetos:
+
+| Origem | Exemplo | Descricao |
+| --- | --- | --- |
+| `params` | `{{ params.topicName }}` | Parametros declarados no path da rota. |
+| `query` | `{{ query.source }}` | Parametros da query string. |
+| `headers` | `{{ headers.x-tenant-id }}` | Headers HTTP convertidos para string. Headers nao UTF-8 sao ignorados. |
+| `body` | `{{ body.customer.id }}` | Campos do body quando o request e JSON. |
+| `context` | `{{ context.requestId }}` | Metadados gerados pelo Postio. |
+
+Campos disponiveis em `context`:
+
+| Campo | Descricao |
+| --- | --- |
+| `requestId` | UUID gerado para o request. |
+| `timestamp` | Timestamp UTC em RFC3339. |
+| `method` | Metodo HTTP recebido. Na v0 sera `POST`. |
+| `path` | Path real chamado pelo cliente. |
+| `routeId` | `id` da rota configurada. |
+
+Quando a string inteira e um template, o valor JSON original e preservado:
+
+```yaml
+message:
+  customerId: "{{ body.customer.id }}"
+  amount: "{{ body.amount }}"
+```
+
+Se `body.amount` for numero, ele continua numero no JSON renderizado antes de ser convertido para envio.
+
+Quando o template esta embutido em outra string, o resultado final e string:
+
+```yaml
+key: "events/{{ context.requestId }}.json"
+```
+
+### Tratamento do body
+
+- Body vazio vira `null`.
+- Body JSON valido vira JSON.
+- Body nao JSON, mas UTF-8, vira string.
+- Body nao UTF-8 retorna `400 Bad Request`.
+
+## Recurso SNS
+
+O destino `sns` publica uma mensagem em um topico AWS SNS.
+
+### Propriedades
+
+| Propriedade | Obrigatoria | Template | Descricao |
+| --- | --- | --- | --- |
+| `type` | sim | nao | Deve ser `sns`. |
+| `topicArn` | condicional | sim | ARN completo do topico. Se informado, e usado diretamente. |
+| `topic` | condicional | sim | Nome do topico ou ARN. Obrigatorio quando `topicArn` nao existe. Nome e resolvido via `ListTopics` e cacheado em memoria. |
+| `subject` | nao | sim | Subject da mensagem SNS. |
+| `message` | nao | sim | Payload enviado ao SNS. Se ausente, usa o body completo do request. |
+| `attributes` | nao | sim | Mapa de atributos SNS. Todos sao enviados como `String`. |
+
+`topic` ou `topicArn` e obrigatorio.
+
+### SNS com topico fixo
+
+```yaml
+routes:
+  - id: orders-topic
+    path: /orders
+    sink:
+      type: sns
+      topicArn: arn:aws:sns:us-east-1:123456789012:orders-created
+```
+
+### SNS com topico dinamico
+
+```yaml
+routes:
+  - id: dynamic-topic
+    path: /events/{topic}
+    sink:
+      type: sns
+      topic: "{{ params.topic }}"
+      subject: "event from {{ query.source }}"
+```
+
+### SNS com mensagem e atributos
+
+```yaml
+routes:
+  - id: payment-events
+    path: /payments/{eventType}
+    sink:
+      type: sns
+      topic: payment-events
+      subject: "{{ params.eventType }}"
+      message:
+        eventType: "{{ params.eventType }}"
+        paymentId: "{{ body.payment.id }}"
+        amount: "{{ body.payment.amount }}"
+        requestId: "{{ context.requestId }}"
+      attributes:
+        tenant: "{{ headers.x-tenant-id }}"
+        source: "{{ query.source }}"
+```
+
+Resposta de sucesso SNS:
+
+```json
+{
+  "route_id": "payment-events",
+  "sink": "sns",
+  "status": "accepted",
+  "message_id": "..."
+}
+```
+
+## Recurso SQS
+
+O destino `sqs` envia uma mensagem para uma fila AWS SQS.
+
+### Propriedades
+
+| Propriedade | Obrigatoria | Template | Descricao |
+| --- | --- | --- | --- |
+| `type` | sim | nao | Deve ser `sqs`. |
+| `queueUrl` | condicional | sim | URL completa da fila. Se informada, e usada diretamente. |
+| `queue` | condicional | sim | Nome da fila ou URL. Obrigatorio quando `queueUrl` nao existe. Nome e resolvido via `GetQueueUrl` e cacheado em memoria. |
+| `message` | nao | sim | Payload enviado ao SQS. Se ausente, usa o body completo do request. |
+| `attributes` | nao | sim | Mapa de atributos SQS. Todos sao enviados como `String`. |
+
+`queue` ou `queueUrl` e obrigatorio.
+
+### SQS com URL fixa
+
+```yaml
+routes:
+  - id: queue-input
+    path: /my-queue
+    sink:
+      type: sqs
+      queueUrl: https://sqs.us-east-1.amazonaws.com/123456789012/my-queue
+```
+
+### SQS com nome dinamico
+
+```yaml
+routes:
+  - id: tenant-queue
+    path: /tenants/{tenant}/queue
+    sink:
+      type: sqs
+      queue: "{{ params.tenant }}-input"
+      message:
+        requestId: "{{ context.requestId }}"
+        tenant: "{{ params.tenant }}"
+        payload: "{{ body }}"
+      attributes:
+        tenant: "{{ params.tenant }}"
+        source: "{{ query.source }}"
+```
+
+Resposta de sucesso SQS:
+
+```json
+{
+  "route_id": "tenant-queue",
+  "sink": "sqs",
+  "status": "accepted",
+  "message_id": "..."
+}
+```
+
+## Recurso S3
+
+O destino `s3` grava um objeto em um bucket AWS S3.
+
+### Propriedades
+
+| Propriedade | Obrigatoria | Template | Descricao |
+| --- | --- | --- | --- |
+| `type` | sim | nao | Deve ser `s3`. |
+| `bucket` | sim | sim | Bucket onde o objeto sera criado. |
+| `key` | sim | sim | Chave do objeto dentro do bucket. |
+| `contentType` | nao | nao | Content-Type enviado ao S3. |
+| `object` | nao | sim | Conteudo gravado. Se ausente, usa o body completo do request. |
+| `metadata` | nao | sim | Metadados do objeto. Todos sao convertidos para string. |
+
+### S3 simples
+
+```yaml
+routes:
+  - id: raw-file
+    path: /myfile
+    sink:
+      type: s3
+      bucket: my-ingestion-bucket
+      key: "raw/{{ context.requestId }}.json"
+      contentType: application/json
+```
+
+### S3 com bucket e arquivo dinamicos
+
+```yaml
+routes:
+  - id: dynamic-file
+    path: /file/{bucket}/{filename}
+    sink:
+      type: s3
+      bucket: "{{ params.bucket }}"
+      key: "{{ params.filename }}"
+      contentType: application/json
+```
+
+### S3 com objeto transformado e metadata
+
+```yaml
+routes:
+  - id: audit-file
+    path: /audit/{tenant}/{entity}
+    sink:
+      type: s3
+      bucket: audit-input
+      key: "{{ params.tenant }}/{{ params.entity }}/{{ context.requestId }}.json"
+      contentType: application/json
+      object:
+        tenant: "{{ params.tenant }}"
+        entity: "{{ params.entity }}"
+        source: "{{ query.source }}"
+        receivedAt: "{{ context.timestamp }}"
+        payload: "{{ body }}"
+      metadata:
+        tenant: "{{ params.tenant }}"
+        routeId: "{{ context.routeId }}"
+```
+
+Resposta de sucesso S3:
+
+```json
+{
+  "route_id": "audit-file",
+  "sink": "s3",
+  "status": "created",
+  "bucket": "audit-input",
+  "key": "tenant-a/order/....json",
+  "etag": "\"...\""
+}
+```
+
+## Exemplos simples
+
+### Um endpoint para SNS
+
+```yaml
+routes:
+  - id: anywhere-topic
+    path: /anywhere
+    sink:
+      type: sns
+      topic: my-topic
+```
+
+Chamada:
+
+```bash
+curl -X POST http://127.0.0.1:8080/anywhere \
+  -H 'content-type: application/json' \
+  -d '{"hello":"sns"}'
+```
+
+### Um endpoint para SQS
+
+```yaml
+routes:
+  - id: my-queue
+    path: /my-queue
+    sink:
+      type: sqs
+      queue: my-queue
+```
+
+Chamada:
+
+```bash
+curl -X POST http://127.0.0.1:8080/my-queue \
+  -H 'content-type: application/json' \
+  -d '{"hello":"sqs"}'
+```
+
+### Um endpoint para S3
+
+```yaml
+routes:
+  - id: my-file
+    path: /myfile
+    sink:
+      type: s3
+      bucket: my-ingestion-bucket
+      key: "requests/{{ context.requestId }}.json"
+      contentType: application/json
+```
+
+Chamada:
+
+```bash
+curl -X POST http://127.0.0.1:8080/myfile \
+  -H 'content-type: application/json' \
+  -d '{"hello":"s3"}'
+```
+
+## Exemplo complexo
+
+Este exemplo usa varias rotas, varios destinos, parametros dinamicos, headers, query string e transformacao do payload.
+
+```yaml
+routes:
+  - id: tenant-events-topic
+    path: /tenants/{tenant}/events/{eventType}
+    sink:
+      type: sns
+      topic: "{{ params.tenant }}-events"
+      subject: "{{ params.eventType }}"
+      message:
+        eventType: "{{ params.eventType }}"
+        tenant: "{{ params.tenant }}"
+        source: "{{ query.source }}"
+        correlationId: "{{ headers.x-correlation-id }}"
+        payload: "{{ body }}"
+        receivedAt: "{{ context.timestamp }}"
+      attributes:
+        tenant: "{{ params.tenant }}"
+        eventType: "{{ params.eventType }}"
+        requestId: "{{ context.requestId }}"
+
+  - id: tenant-command-queue
+    path: /tenants/{tenant}/commands/{commandName}
+    sink:
+      type: sqs
+      queue: "{{ params.tenant }}-commands"
+      message:
+        command: "{{ params.commandName }}"
+        tenant: "{{ params.tenant }}"
+        payload: "{{ body }}"
+        requestId: "{{ context.requestId }}"
+      attributes:
+        tenant: "{{ params.tenant }}"
+        command: "{{ params.commandName }}"
+
+  - id: tenant-raw-archive
+    path: /tenants/{tenant}/archive/{entity}/{fileName}
+    sink:
+      type: s3
+      bucket: central-ingestion-archive
+      key: "{{ params.tenant }}/{{ params.entity }}/{{ params.fileName }}"
+      contentType: application/json
+      object:
+        tenant: "{{ params.tenant }}"
+        entity: "{{ params.entity }}"
+        originalFileName: "{{ params.fileName }}"
+        source: "{{ query.source }}"
+        requestId: "{{ context.requestId }}"
+        payload: "{{ body }}"
+      metadata:
+        tenant: "{{ params.tenant }}"
+        entity: "{{ params.entity }}"
+        source: "{{ query.source }}"
+```
+
+Chamadas:
+
+```bash
+curl -X POST 'http://127.0.0.1:8080/tenants/acme/events/order-created?source=checkout' \
+  -H 'content-type: application/json' \
+  -H 'x-correlation-id: corr-123' \
+  -d '{"order":{"id":"ord-1","total":99.9}}'
+
+curl -X POST 'http://127.0.0.1:8080/tenants/acme/commands/recalculate-score' \
+  -H 'content-type: application/json' \
+  -d '{"customerId":"cus-1"}'
+
+curl -X POST 'http://127.0.0.1:8080/tenants/acme/archive/orders/order-1.json?source=batch' \
+  -H 'content-type: application/json' \
+  -d '{"order":{"id":"ord-1","total":99.9}}'
+```
+
+## Chamando a API
+
+Rotas configuradas retornam:
+
+- `202 Accepted` para SNS e SQS.
+- `201 Created` para S3.
+- `400 Bad Request` quando o body nao pode ser interpretado como UTF-8.
+- Erros `5xx` quando a chamada ao destino falha.
+
+Exemplo de health check:
+
+```bash
+curl http://127.0.0.1:8080/health
+```
+
+Exemplo de echo:
+
+```bash
+curl -X POST http://127.0.0.1:8080/echo \
+  -H 'content-type: application/json' \
+  -d '{"debug":true}'
+```
+
+## Observabilidade
+
+Postio foi pensado para permitir acompanhar a operacao de ponta a ponta via traces.
+
+### Subindo stack local
+
+```bash
+docker compose up -d jaeger grafana
+```
+
+URLs:
 
 - Grafana: `http://localhost:3001`
 - Jaeger: `http://localhost:16686`
-- OTLP HTTP endpoint: `http://localhost:4318`
-- OTLP gRPC endpoint: `http://localhost:4317`
+- OTLP HTTP: `http://localhost:4318`
+- OTLP gRPC: `http://localhost:4317`
 
-Useful spans:
+### Spans principais
 
-- `postio.ingest.request`
-- `postio.ingest.parse_body`
-- `postio.ingest.build_context`
-- `postio.ingest.dispatch`
-- `postio.aws.sns.publish`
-- `postio.aws.sqs.send_message`
-- `postio.aws.s3.put_object`
+| Span | Descricao |
+| --- | --- |
+| `postio.ingest.request` | Span principal do request de injestao. |
+| `postio.ingest.parse_body` | Parse do body em JSON, texto ou null. |
+| `postio.ingest.build_context` | Montagem do contexto de templates. |
+| `postio.ingest.dispatch` | Envio ao destino configurado. |
+| `postio.aws.sns` | Escopo da operacao SNS. |
+| `postio.aws.sns.publish` | Chamada `Publish` no SNS. |
+| `postio.aws.sns.list_topics` | Resolucao de nome de topico para ARN quando necessario. |
+| `postio.aws.sqs` | Escopo da operacao SQS. |
+| `postio.aws.sqs.send_message` | Chamada `SendMessage` no SQS. |
+| `postio.aws.sqs.get_queue_url` | Resolucao de nome de fila para URL quando necessario. |
+| `postio.aws.s3` | Escopo da operacao S3. |
+| `postio.aws.s3.put_object` | Chamada `PutObject` no S3. |
 
-Trace fields include `request_id`, `route_id`, `sink_type`, `http.route`, `http.target`, request body size, response status, sink status, and AWS response identifiers when available.
+### Atributos uteis nos traces
 
-### Artifact image
+- `request_id`
+- `route_id`
+- `sink_type`
+- `http.method`
+- `http.route`
+- `http.target`
+- `request.body_bytes`
+- `response.status_code`
+- `sink.status`
+- `aws.sns.message_id`
+- `aws.sqs.message_id`
+- `s3.bucket`
+- `s3.key`
+- `s3.etag`
 
-`Dockerfile.artifact` expects a prebuilt binary in `artifacts/<bin-name>/<arch>/` and accepts `BIN_NAME` as a build argument. Example:
+Por seguranca, o body completo nao e registrado automaticamente como atributo de trace. O tamanho do body e registrado em `request.body_bytes`.
 
-`docker build -f Dockerfile.artifact --build-arg TARGETARCH=amd64 --build-arg BIN_NAME=postio .`
+## Operacao
 
-### Testing
+### Imagem Docker por artefato
 
-- Unit tests: `cargo test`
-- Integration tests: `cargo test --test integration`
+`Dockerfile.artifact` espera um binario precompilado em `artifacts/<bin-name>/<arch>/` e aceita `BIN_NAME`.
 
-## Architecture
-
-This template is organized around four main layers:
-
-- `routes/`: transport and protocol adapters for HTTP
-- `services/`: business rules and use-case orchestration
-- `repositories/`: external integration adapters when needed
-- `dto/`: request/response contracts, validation, and data transformation structs
-
-Preferred flow:
-
-- `route -> dto -> service -> repository -> service -> dto -> route`
-
-Guidelines:
-
-- keep HTTP details inside `routes/`
-- keep business decisions inside `services/`
-- keep queues and external API clients inside `repositories/`
-- keep payload contracts and transformation structs inside `dto/`
-- let `AppState` carry shared application dependencies instead of exposing raw clients when possible
-
-## Project Layout
-
+```bash
+docker build \
+  -f Dockerfile.artifact \
+  --build-arg TARGETARCH=amd64 \
+  --build-arg BIN_NAME=postio \
+  .
 ```
+
+### Deploy
+
+Para ambientes containerizados, configure pelo menos:
+
+```bash
+APP_HOST=0.0.0.0
+APP_PORT=8080
+POSTIO_CONFIG=/etc/postio/config.yaml
+AWS_REGION=us-east-1
+OTEL_SERVICE_NAME=postio
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+```
+
+Monte o arquivo de rotas em `POSTIO_CONFIG` e garanta permissoes IAM para:
+
+- SNS: `sns:Publish` e, se usar `topic` por nome, `sns:ListTopics`.
+- SQS: `sqs:SendMessage` e, se usar `queue` por nome, `sqs:GetQueueUrl`.
+- S3: `s3:PutObject`.
+
+## Testes e desenvolvimento
+
+Comandos principais:
+
+```bash
+cargo fmt -- --check
+cargo build
+OTEL_ENABLED=false cargo test
+```
+
+Testes de integracao:
+
+```bash
+OTEL_ENABLED=false cargo test --test integration
+```
+
+## Arquitetura
+
+Fluxo principal:
+
+```text
+HTTP route -> parse body -> build template context -> render sink config -> AWS sink
+```
+
+Organizacao relevante:
+
+```text
 src/
-  config.rs         # environment loading
-  dto/              # request/response contracts and shared transport payloads
-  routes/           # HTTP transport handlers plus wiring
-  services/         # business rules and use-case orchestration
+  bridge/
+    aws.rs          # dispatcher AWS para SNS, SQS e S3
+    config.rs       # modelo e validacao do YAML/JSON
+    dispatcher.rs   # contrato de dispatch
+    template.rs     # renderizacao de templates
+  routes/
+    ingest.rs       # rotas dinamicas de injestao
+    system.rs       # health e echo
+  config.rs         # variaveis de ambiente
+  state.rs          # estado compartilhado da aplicacao
 ```
 
-Adjust the repositories and services to fit your application, then expand the router with new modules as needed.
+## Limitacoes da v0
+
+- Apenas rotas `POST` sao registradas.
+- Apenas destinos `sns`, `sqs` e `s3` estao implementados.
+- Nao ha hot reload do arquivo de configuracao; reinicie a aplicacao apos alterar rotas.
+- Atributos SNS/SQS e metadata S3 sao convertidos para string.
+- Resolucao de `topic` por nome usa `ListTopics`; prefira `topicArn` quando quiser evitar essa chamada.
+- Resolucao de `queue` por nome usa `GetQueueUrl`; prefira `queueUrl` quando quiser evitar essa chamada.
+- Nao ha autenticacao/autorizacao HTTP embutida na v0.
+
+## Troubleshooting
+
+### A rota nao responde
+
+Verifique se o arquivo apontado por `POSTIO_CONFIG` foi carregado e se a rota tem `method: POST` ou omite `method`.
+
+### Erro ao resolver topico SNS
+
+Se usar `topic` por nome, a aplicacao precisa de `sns:ListTopics`. Para simplificar, configure `topicArn` diretamente.
+
+### Erro ao resolver fila SQS
+
+Se usar `queue` por nome, a aplicacao precisa de `sqs:GetQueueUrl`. Para simplificar, configure `queueUrl` diretamente.
+
+### Traces nao aparecem
+
+Confirme:
+
+```bash
+docker compose ps
+echo "$OTEL_ENABLED"
+echo "$OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+```
+
+Use `OTEL_ENABLED=false` apenas quando quiser desabilitar exportacao OTEL.
+
+## Template Bootstrap
+
+Este repositorio veio de um template Rust. Ao criar um novo repositorio a partir dele, rode:
+
+```bash
+./scripts/init-template.sh
+```
+
+Para sobrescrever o nome detectado:
+
+```bash
+./scripts/init-template.sh my-new-api
+```
+
+O script ajusta referencias principais como `Cargo.toml`, imports Rust, README, `.env.example` e `Dockerfile.artifact`, depois executa `cargo build` e `OTEL_ENABLED=false cargo test`.
