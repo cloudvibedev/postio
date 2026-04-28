@@ -105,12 +105,14 @@ Evidencia do caminho de erro:
 - `[x]` Criar teste `HTTP -> HTTP` transformando body/header.
 - `[x]` Criar teste garantindo que pipelines sem `transform` continuam funcionando.
 - `[x]` Criar exemplos de `HTTP -> SQS` com transform template.
-- `[ ]` Criar exemplos de `SQS -> HTTP` com transform template.
+- `[x]` Criar exemplos de `SQS -> HTTP` com transform template.
+- `[x]` Criar teste `SQS -> HTTP` transformando body/header.
 
 Notas da primeira entrega:
 
 - `transform.output.body`, `headers`, `method`, `url` e `delaySeconds` ja sao aplicados no runtime.
 - `transform.output.query` e `attributes` ja fazem parte do schema, mas ainda estao reservados para implementacao de target request completo.
+- Exemplo `SQS -> HTTP` com `transform.engine: template` documentado no README e no plano.
 
 ## Rotas Temporarias De Validacao
 

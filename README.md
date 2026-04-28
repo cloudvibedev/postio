@@ -294,6 +294,69 @@ pipeline:
     url: https://example.com/events
 ```
 
+Exemplo lendo SQS e enviando para HTTP:
+
+```yaml
+pipeline:
+  id: sqs-to-http-template
+  source:
+    type: sqs
+    queue: orders-input
+    batchSize: 5
+    waitTimeSeconds: 10
+    visibilityTimeoutSeconds: 30
+  transform:
+    engine: template
+    output:
+      headers:
+        content-type: application/json
+        x-postio-source: "{{ context.sourceType }}"
+        x-postio-event: "{{ body.event }}"
+      body:
+        event: "{{ body.event }}"
+        orderId: "{{ body.order.id }}"
+        total: "{{ body.order.total }}"
+        requestId: "{{ context.requestId }}"
+        sourceType: "{{ context.sourceType }}"
+        original: "{{ body }}"
+  target:
+    type: http
+    method: POST
+    url: https://api.example.com/orders/events
+    timeoutMs: 5000
+```
+
+Mensagem de entrada na fila:
+
+```json
+{
+  "event": "order.created",
+  "order": {
+    "id": "ord-1",
+    "total": 99.9
+  }
+}
+```
+
+Request enviado ao HTTP target:
+
+```json
+{
+  "event": "order.created",
+  "orderId": "ord-1",
+  "total": 99.9,
+  "requestId": "gerado-pelo-postio",
+  "sourceType": "sqs",
+  "original": {
+    "event": "order.created",
+    "order": {
+      "id": "ord-1",
+      "total": 99.9
+    }
+  }
+}
+```
+
 ### Exemplos de pipeline
 
 HTTP para SQS:

@@ -723,6 +723,93 @@ async fn sqs_pipeline_sends_payload_to_http_target_and_deletes_source_message() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sqs_pipeline_template_transform_sends_payload_and_headers_to_http_target() {
+    let captured = Arc::new(tokio::sync::Mutex::new(Vec::<CapturedHttpRequest>::new()));
+    let target_addr = spawn_http_target_with_headers(captured.clone()).await;
+    let sqs = MockSqs::spawn(vec![MockSqsMessage {
+        message_id: "source-message-1".to_string(),
+        receipt_handle: "receipt-1".to_string(),
+        body: r#"{"event":"order.created","order":{"id":"ord-1","total":99.9}}"#.to_string(),
+    }])
+    .await;
+    let bridge_config = BridgeConfig {
+        routes: Vec::new(),
+        pipeline: Some(PipelineConfig {
+            id: "sqs-to-http-template".to_string(),
+            enabled: true,
+            source: SourceConfig::Sqs {
+                queue: None,
+                queue_url: Some(sqs.queue_url("input")),
+                batch_size: 1,
+                wait_time_seconds: 0,
+                visibility_timeout_seconds: Some(5),
+            },
+            transform: Some(TransformConfig::Template {
+                output: TransformTemplateOutput {
+                    headers: Some(BTreeMap::from([(
+                        "x-postio-event".to_string(),
+                        "{{ body.event }}".to_string(),
+                    )])),
+                    body: Some(json!({
+                        "event": "{{ body.event }}",
+                        "orderId": "{{ body.order.id }}",
+                        "total": "{{ body.order.total }}",
+                        "sourceType": "{{ context.sourceType }}",
+                        "requestId": "{{ context.requestId }}",
+                        "original": "{{ body }}"
+                    })),
+                    ..TransformTemplateOutput::default()
+                },
+            }),
+            target: TargetConfig::Http {
+                method: "POST".to_string(),
+                url: format!("http://{target_addr}/target"),
+                headers: None,
+                timeout_ms: Some(1000),
+            },
+        }),
+    };
+
+    let _router = setup_router_with_sqs_client(
+        bridge_config,
+        Arc::new(NoopDispatcher),
+        test_sqs_client_for(sqs.endpoint_url()),
+    )
+    .await;
+
+    wait_until(Duration::from_secs(3), || {
+        let captured = captured.clone();
+        async move { !captured.lock().await.is_empty() }
+    })
+    .await;
+
+    let captured = captured.lock().await;
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].header.as_deref(), Some("order.created"));
+    let transformed: Value =
+        serde_json::from_str(&captured[0].body).expect("http target body should be json");
+    assert_eq!(transformed["event"], "order.created");
+    assert_eq!(transformed["orderId"], "ord-1");
+    assert_eq!(transformed["total"], 99.9);
+    assert_eq!(transformed["sourceType"], "sqs");
+    assert_eq!(transformed["original"]["order"]["id"], "ord-1");
+    assert!(transformed["requestId"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+    drop(captured);
+
+    wait_until(Duration::from_secs(3), || {
+        let sqs = sqs.clone();
+        async move {
+            sqs.deleted_receipts()
+                .await
+                .contains(&"receipt-1".to_string())
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sqs_pipeline_sends_payload_to_sqs_target_and_deletes_source_message() {
     let sqs = MockSqs::spawn(vec![MockSqsMessage {
         message_id: "source-message-1".to_string(),

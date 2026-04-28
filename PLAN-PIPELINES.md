@@ -2420,6 +2420,37 @@ pipeline:
     url: http://localhost:9090/receive
 ```
 
+Exemplo SQS -> HTTP com `transform.engine: template`:
+
+```yaml
+pipeline:
+  id: sqs-to-http-template
+  source:
+    type: sqs
+    queueUrl: http://localhost:4566/000000000000/in-queue
+    batchSize: 1
+    waitTimeSeconds: 1
+    visibilityTimeoutSeconds: 30
+  transform:
+    engine: template
+    output:
+      headers:
+        content-type: application/json
+        x-postio-event: "{{ body.event }}"
+      body:
+        event: "{{ body.event }}"
+        orderId: "{{ body.order.id }}"
+        total: "{{ body.order.total }}"
+        requestId: "{{ context.requestId }}"
+        sourceType: "{{ context.sourceType }}"
+        original: "{{ body }}"
+  target:
+    type: http
+    method: POST
+    url: http://localhost:9090/receive
+    timeoutMs: 5000
+```
+
 ### Fase 5: Targets SNS/S3 No Pipeline Engine
 
 - Adaptar target `sns` para o novo contrato de pipeline.
