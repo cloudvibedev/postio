@@ -1,9 +1,12 @@
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
+use opentelemetry::Context as OtelContext;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::oneshot;
+use tracing::Span;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -13,8 +16,41 @@ pub struct PipelineMessage {
     pub source: SourceContext,
     pub payload: Payload,
     pub metadata: MessageMetadata,
+    pub trace: TraceContext,
     pub attempt: u32,
     pub reply: Option<oneshot::Sender<CompletionResponse>>,
+}
+
+#[derive(Clone, Default)]
+pub struct TraceContext {
+    parent: OtelContext,
+}
+
+impl std::fmt::Debug for TraceContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TraceContext")
+            .finish_non_exhaustive()
+    }
+}
+
+impl TraceContext {
+    pub fn current() -> Self {
+        Self {
+            parent: Span::current().context(),
+        }
+    }
+
+    pub fn from_span(span: &Span) -> Self {
+        Self {
+            parent: span.context(),
+        }
+    }
+
+    pub fn child_span(&self, span: Span) -> Span {
+        let _ = span.set_parent(self.parent.clone());
+        span
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -108,5 +144,19 @@ impl Payload {
             Payload::Text(value) => value.clone(),
             Payload::Empty => String::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tracing::info_span;
+
+    use super::TraceContext;
+
+    #[test]
+    fn trace_context_can_create_child_span_when_otel_layer_is_absent() {
+        let span = TraceContext::default().child_span(info_span!("postio.test.child"));
+
+        assert!(!span.is_none());
     }
 }

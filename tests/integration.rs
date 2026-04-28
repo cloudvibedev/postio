@@ -481,6 +481,59 @@ async fn http_pipeline_sends_payload_to_sqs_target() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_pipeline_reports_failed_http_target() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind unused target port");
+    let target_addr = listener.local_addr().expect("target addr");
+    drop(listener);
+
+    let bridge_config = BridgeConfig {
+        routes: Vec::new(),
+        pipeline: Some(PipelineConfig {
+            id: "http-to-failed-http".to_string(),
+            enabled: true,
+            source: SourceConfig::Http {
+                method: "POST".to_string(),
+                path: "/pipe".to_string(),
+            },
+            target: TargetConfig::Http {
+                method: "POST".to_string(),
+                url: format!("http://{target_addr}/target"),
+                headers: None,
+                timeout_ms: Some(200),
+            },
+        }),
+    };
+    let router = setup_router_with_bridge_config(bridge_config, Arc::new(NoopDispatcher)).await;
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/pipe")
+                .body(Body::from(r#"{"hello":"failure"}"#))
+                .expect("build request"),
+        )
+        .await
+        .expect("request failed");
+
+    let status = response.status();
+    let body = response_json(response).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    assert_eq!(body["pipelineId"], "http-to-failed-http");
+    assert_eq!(body["status"], "failed");
+    assert!(
+        body["error"]
+            .as_str()
+            .expect("error message")
+            .contains("failed to send http target"),
+        "{body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sqs_pipeline_sends_payload_to_http_target_and_deletes_source_message() {
     let captured = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
     let target_addr = spawn_http_target(captured.clone()).await;

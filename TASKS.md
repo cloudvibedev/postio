@@ -66,8 +66,9 @@ Notas:
 
 - Grafana `http://grafana.o11y.sdx.autob` respondeu com sucesso e permitiu consultar o datasource Tempo pelo proxy.
 - Os spans da pipeline existem no Tempo, mas aparecem divididos em traces diferentes quando atravessam channels/tasks Tokio.
-- Proxima correcao de observabilidade: carregar o contexto de trace dentro da `PipelineMessage` e reanexar o parent span em cada etapa.
-- Ainda falta criar um cenario controlado de falha de target para validar erro no trace.
+- Correcao local implementada: carregar o contexto de trace dentro da `PipelineMessage` e reanexar o parent span em cada etapa.
+- Correcao local implementada: falha de target registra `result.status`, `error.kind` e evento de erro no span `postio.pipeline.target.send`.
+- Ainda falta validar em Grafana/Tempo, apos novo deploy, que os spans aparecem no mesmo trace e que o erro de target aparece com contexto suficiente.
 
 ## Proxima Fase Planejada
 

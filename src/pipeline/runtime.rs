@@ -11,7 +11,7 @@ use crate::pipeline::{
     config::{PipelineConfig, SourceConfig, TargetConfig},
     model::{
         CompletionResponse, MessageMetadata, Payload, PipelineMessage, PipelineResult,
-        SourceContext, TargetResponse,
+        SourceContext, TargetResponse, TraceContext,
     },
     resources::PipelineResources,
 };
@@ -82,6 +82,7 @@ impl PipelineRuntime {
                 content_type: header_value(&headers, "content-type"),
                 headers: headers_to_map(&headers),
             },
+            trace: TraceContext::current(),
             attempt: 1,
             reply: Some(reply_tx),
         };
@@ -131,6 +132,11 @@ async fn run_decode_worker(
     tx: mpsc::Sender<PipelineMessage>,
 ) {
     while let Some(mut message) = rx.recv().await {
+        let span = message.trace.child_span(info_span!(
+            "postio.pipeline.decode",
+            pipeline.id = %message.pipeline_id,
+            request.id = %message.id
+        ));
         async {
             if let Payload::Raw(bytes) = &message.payload {
                 message.payload = Payload::decode(bytes.clone());
@@ -139,7 +145,7 @@ async fn run_decode_worker(
                 warn!("pipeline validate channel closed");
             }
         }
-        .instrument(info_span!("postio.pipeline.decode"))
+        .instrument(span)
         .await;
     }
 }
@@ -149,12 +155,18 @@ async fn run_validate_noop_worker(
     tx: mpsc::Sender<PipelineMessage>,
 ) {
     while let Some(message) = rx.recv().await {
+        let span = message.trace.child_span(info_span!(
+            "postio.pipeline.validate",
+            pipeline.id = %message.pipeline_id,
+            request.id = %message.id,
+            engine = "noop"
+        ));
         async {
             if tx.send(message).await.is_err() {
                 warn!("pipeline transform channel closed");
             }
         }
-        .instrument(info_span!("postio.pipeline.validate", engine = "noop"))
+        .instrument(span)
         .await;
     }
 }
@@ -164,15 +176,18 @@ async fn run_transform_noop_worker(
     tx: mpsc::Sender<PipelineMessage>,
 ) {
     while let Some(message) = rx.recv().await {
+        let span = message.trace.child_span(info_span!(
+            "postio.pipeline.transform.request",
+            pipeline.id = %message.pipeline_id,
+            request.id = %message.id,
+            engine = "noop"
+        ));
         async {
             if tx.send(message).await.is_err() {
                 warn!("pipeline target channel closed");
             }
         }
-        .instrument(info_span!(
-            "postio.pipeline.transform.request",
-            engine = "noop"
-        ))
+        .instrument(span)
         .await;
     }
 }
@@ -185,14 +200,39 @@ async fn run_target_worker(
 ) {
     while let Some(message) = rx.recv().await {
         let target_type = config.target.type_name();
-        let target = async { send_to_target(&config.target, &resources, &message).await }
-            .instrument(info_span!(
-                "postio.pipeline.target.send",
-                pipeline.id = %message.pipeline_id,
-                target.type = target_type
-            ))
-            .await
-            .map_err(|error| error.to_string());
+        let span = message.trace.child_span(info_span!(
+            "postio.pipeline.target.send",
+            pipeline.id = %message.pipeline_id,
+            request.id = %message.id,
+            target.type = target_type,
+            target.status = tracing::field::Empty,
+            result.status = tracing::field::Empty,
+            error.kind = tracing::field::Empty
+        ));
+        let target = async {
+            match send_to_target(&config.target, &resources, &message).await {
+                Ok(response) => {
+                    tracing::Span::current().record("target.status", response.status_code);
+                    tracing::Span::current().record("result.status", "accepted");
+                    Ok(response)
+                }
+                Err(error) => {
+                    tracing::Span::current().record("result.status", "failed");
+                    tracing::Span::current().record("error.kind", "target_send_failed");
+                    error!(
+                        %error,
+                        pipeline.id = %message.pipeline_id,
+                        request.id = %message.id,
+                        target.type = target_type,
+                        "pipeline target failed"
+                    );
+                    Err(error)
+                }
+            }
+        }
+        .instrument(span)
+        .await
+        .map_err(|error| error.to_string());
         if tx.send(PipelineResult { message, target }).await.is_err() {
             warn!("pipeline completion channel closed");
         }
@@ -204,6 +244,11 @@ async fn run_completion_worker(
     resources: PipelineResources,
 ) {
     while let Some(result) = rx.recv().await {
+        let span = result.message.trace.child_span(info_span!(
+            "postio.pipeline.complete",
+            pipeline.id = %result.message.pipeline_id,
+            request.id = %result.message.id
+        ));
         async {
             let response = match result.target {
                 Ok(target) => {
@@ -251,10 +296,7 @@ async fn run_completion_worker(
                 let _ = reply.send(response);
             }
         }
-        .instrument(info_span!(
-            "postio.pipeline.complete",
-            pipeline.id = %result.message.pipeline_id
-        ))
+        .instrument(span)
         .await;
     }
 }
@@ -369,6 +411,13 @@ async fn run_sqs_source(
                         None => continue,
                     };
                     let id = Uuid::new_v4();
+                    let receive_span = info_span!(
+                        "postio.pipeline.receive",
+                        pipeline.id = %pipeline_id,
+                        request.id = %id,
+                        source.type = "sqs",
+                        sqs.message_id = message.message_id().unwrap_or_default()
+                    );
                     let pipeline_message = PipelineMessage {
                         id,
                         pipeline_id: pipeline_id.clone(),
@@ -381,11 +430,20 @@ async fn run_sqs_source(
                             message.body().unwrap_or_default().to_string(),
                         )),
                         metadata: MessageMetadata::default(),
+                        trace: TraceContext::from_span(&receive_span),
                         attempt: 1,
                         reply: None,
                     };
-                    if input_tx.send(pipeline_message).await.is_err() {
-                        warn!(pipeline.id = %pipeline_id, "pipeline input channel closed");
+                    let sent = async {
+                        if input_tx.send(pipeline_message).await.is_err() {
+                            warn!(pipeline.id = %pipeline_id, "pipeline input channel closed");
+                            return false;
+                        }
+                        true
+                    }
+                    .instrument(receive_span)
+                    .await;
+                    if !sent {
                         return;
                     }
                 }
