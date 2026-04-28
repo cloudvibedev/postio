@@ -4,7 +4,10 @@ use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::pipeline::config::{PipelineConfig, SourceConfig, TargetConfig};
+use crate::pipeline::{
+    config::{PipelineConfig, SourceConfig, TargetConfig},
+    validation::PipelineValidator,
+};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -168,6 +171,9 @@ fn validate_pipeline(pipeline: &PipelineConfig) -> Result<()> {
         _ => {}
     }
 
+    PipelineValidator::compile(pipeline.validate.clone())
+        .with_context(|| format!("pipeline {} validate config is invalid", pipeline.id))?;
+
     Ok(())
 }
 
@@ -234,6 +240,15 @@ pipeline:
     type: http
     method: POST
     path: /orders
+  validate:
+    engine: jsonschema
+    schema:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: string
   target:
     type: sqs
     queue: orders-output
@@ -253,6 +268,7 @@ pipeline:
         };
         assert_eq!(source.method, "POST");
         assert_eq!(source.path, "/orders");
+        assert!(pipeline.validate.is_some());
 
         let TargetConfig::Sqs(target) = pipeline.target else {
             panic!("expected sqs target");
@@ -322,6 +338,33 @@ pipeline:
         let error = validate_config(config).expect_err("conflict is rejected");
         assert!(
             error.to_string().contains("conflicts with route legacy"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_pipeline_validate_schema() {
+        let config: BridgeConfig = serde_yaml::from_str(
+            r#"
+pipeline:
+  id: invalid-validator
+  source:
+    type: http
+    path: /orders
+  validate:
+    engine: jsonschema
+    schema:
+      type: definitely-not-valid
+  target:
+    type: sqs
+    queue: orders-output
+"#,
+        )
+        .expect("config parses");
+
+        let error = validate_config(config).expect_err("invalid jsonschema is rejected");
+        assert!(
+            error.to_string().contains("validate config is invalid"),
             "{error}"
         );
     }

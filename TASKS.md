@@ -168,12 +168,19 @@ Decisao:
 
 ### Proxima Capacidade Estrutural
 
-- `[ ]` Definir schema inicial de `validate.engine: jsonschema`.
-- `[ ]` Implementar etapa `validate` real mantendo fallback noop quando `validate` nao existir.
-- `[ ]` Criar teste de payload valido seguindo para o target.
-- `[ ]` Criar teste de payload invalido bloqueando o target.
-- `[ ]` Garantir span `postio.pipeline.validate` com `result.status=accepted` ou `result.status=rejected`.
-- `[ ]` Documentar exemplos simples de validacao no README.
+- `[x]` Definir schema inicial de `validate.engine: jsonschema`.
+- `[x]` Implementar etapa `validate` real mantendo fallback noop quando `validate` nao existir.
+- `[x]` Criar teste de payload valido seguindo para o target.
+- `[x]` Criar teste de payload invalido bloqueando o target.
+- `[x]` Garantir span `postio.pipeline.validate` com `result.status=accepted` ou `result.status=rejected`.
+- `[x]` Documentar exemplos simples de validacao no README.
+
+Notas:
+
+- Primeira fatia implementada com JSON Schema inline em `validate.schema`.
+- `schemaRef`, `validation.steps`, `validate.engine: rhai`, `validate.engine: http` e `validate.engine: grpc` continuam fora desta entrega.
+- HTTP source retorna `422 Unprocessable Entity` com `status: rejected` quando a validacao falha.
+- SQS source nao deleta a mensagem quando a validacao falha.
 
 ### Transformacao Avancada
 

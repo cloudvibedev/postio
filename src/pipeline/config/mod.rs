@@ -3,10 +3,12 @@ use serde::Deserialize;
 mod source;
 mod target;
 mod transform;
+mod validate;
 
 pub use source::{HttpSourceConfig, SourceConfig, SqsSourceConfig};
 pub use target::{HttpTargetConfig, SqsTargetConfig, TargetConfig};
 pub use transform::{TemplateTransformConfig, TransformConfig, TransformTemplateOutput};
+pub use validate::{JsonSchemaValidateConfig, ValidateConfig};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,6 +17,8 @@ pub struct PipelineConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     pub source: SourceConfig,
+    #[serde(default)]
+    pub validate: Option<ValidateConfig>,
     #[serde(default)]
     pub transform: Option<TransformConfig>,
     pub target: TargetConfig,

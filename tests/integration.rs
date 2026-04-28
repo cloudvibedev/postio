@@ -25,9 +25,9 @@ use postio::{
     libs::telemetry,
     pipeline::{
         config::{
-            HttpSourceConfig, HttpTargetConfig, PipelineConfig, SourceConfig, SqsSourceConfig,
-            SqsTargetConfig, TargetConfig, TemplateTransformConfig, TransformConfig,
-            TransformTemplateOutput,
+            HttpSourceConfig, HttpTargetConfig, JsonSchemaValidateConfig, PipelineConfig,
+            SourceConfig, SqsSourceConfig, SqsTargetConfig, TargetConfig, TemplateTransformConfig,
+            TransformConfig, TransformTemplateOutput, ValidateConfig,
         },
         resources::PipelineResources,
         runtime::PipelineRuntime,
@@ -185,6 +185,20 @@ async fn response_bytes(response: Response) -> bytes::Bytes {
         .await
         .expect("failed to read response body")
         .to_bytes()
+}
+
+fn order_jsonschema_validate_config() -> ValidateConfig {
+    ValidateConfig::JsonSchema(JsonSchemaValidateConfig {
+        schema: json!({
+            "type": "object",
+            "required": ["id", "tenant", "total"],
+            "properties": {
+                "id": { "type": "string" },
+                "tenant": { "type": "string" },
+                "total": { "type": "number" }
+            }
+        }),
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -396,6 +410,7 @@ async fn http_pipeline_sends_payload_to_http_target() {
                 method: "POST".to_string(),
                 path: "/pipe/{tenant}".to_string(),
             }),
+            validate: None,
             transform: None,
             target: TargetConfig::Http(HttpTargetConfig {
                 method: "POST".to_string(),
@@ -443,6 +458,7 @@ async fn http_pipeline_sends_payload_to_sqs_target() {
                 method: "POST".to_string(),
                 path: "/pipe".to_string(),
             }),
+            validate: None,
             transform: None,
             target: TargetConfig::Sqs(SqsTargetConfig {
                 queue: None,
@@ -487,6 +503,154 @@ async fn http_pipeline_sends_payload_to_sqs_target() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_pipeline_jsonschema_validation_allows_valid_payload_to_sqs_target() {
+    let sqs = MockSqs::spawn(vec![]).await;
+    let bridge_config = BridgeConfig {
+        routes: Vec::new(),
+        pipeline: Some(PipelineConfig {
+            id: "http-to-sqs-validated".to_string(),
+            enabled: true,
+            source: SourceConfig::Http(HttpSourceConfig {
+                method: "POST".to_string(),
+                path: "/pipe".to_string(),
+            }),
+            validate: Some(order_jsonschema_validate_config()),
+            transform: None,
+            target: TargetConfig::Sqs(SqsTargetConfig {
+                queue: None,
+                queue_url: Some(sqs.queue_url("output")),
+                delay_seconds: None,
+            }),
+        }),
+    };
+    let router = setup_router_with_sqs_client(
+        bridge_config,
+        Arc::new(NoopDispatcher),
+        test_sqs_client_for(sqs.endpoint_url()),
+    )
+    .await;
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/pipe")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"ord-1","tenant":"acme","total":42}"#))
+                .expect("build request"),
+        )
+        .await
+        .expect("request failed");
+
+    let status = response.status();
+    let body = response_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["status"], "accepted");
+    let sent = sqs.sent_messages().await;
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].body, r#"{"id":"ord-1","tenant":"acme","total":42}"#);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_pipeline_jsonschema_validation_rejects_invalid_payload_before_sqs_target() {
+    let sqs = MockSqs::spawn(vec![]).await;
+    let bridge_config = BridgeConfig {
+        routes: Vec::new(),
+        pipeline: Some(PipelineConfig {
+            id: "http-to-sqs-rejected".to_string(),
+            enabled: true,
+            source: SourceConfig::Http(HttpSourceConfig {
+                method: "POST".to_string(),
+                path: "/pipe".to_string(),
+            }),
+            validate: Some(order_jsonschema_validate_config()),
+            transform: None,
+            target: TargetConfig::Sqs(SqsTargetConfig {
+                queue: None,
+                queue_url: Some(sqs.queue_url("output")),
+                delay_seconds: None,
+            }),
+        }),
+    };
+    let router = setup_router_with_sqs_client(
+        bridge_config,
+        Arc::new(NoopDispatcher),
+        test_sqs_client_for(sqs.endpoint_url()),
+    )
+    .await;
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/pipe")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"ord-1","total":"invalid"}"#))
+                .expect("build request"),
+        )
+        .await
+        .expect("request failed");
+
+    let status = response.status();
+    let body = response_json(response).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["status"], "rejected");
+    assert_eq!(body["error"], "validation failed");
+    assert!(body["details"]
+        .as_array()
+        .is_some_and(|details| !details.is_empty()));
+    assert!(sqs.sent_messages().await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_pipeline_jsonschema_validation_rejects_invalid_payload_before_http_target() {
+    let captured = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let target_addr = spawn_http_target(captured.clone()).await;
+
+    let bridge_config = BridgeConfig {
+        routes: Vec::new(),
+        pipeline: Some(PipelineConfig {
+            id: "http-to-http-rejected".to_string(),
+            enabled: true,
+            source: SourceConfig::Http(HttpSourceConfig {
+                method: "POST".to_string(),
+                path: "/pipe".to_string(),
+            }),
+            validate: Some(order_jsonschema_validate_config()),
+            transform: None,
+            target: TargetConfig::Http(HttpTargetConfig {
+                method: "POST".to_string(),
+                url: format!("http://{target_addr}/target"),
+                headers: None,
+                timeout_ms: Some(1000),
+            }),
+        }),
+    };
+    let router = setup_router_with_bridge_config(bridge_config, Arc::new(NoopDispatcher)).await;
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/pipe")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"tenant":"acme","total":42}"#))
+                .expect("build request"),
+        )
+        .await
+        .expect("request failed");
+
+    let status = response.status();
+    let body = response_json(response).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["status"], "rejected");
+    assert!(captured.lock().await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn http_pipeline_template_transform_sends_payload_to_sqs_target() {
     let sqs = MockSqs::spawn(vec![]).await;
     let bridge_config = BridgeConfig {
@@ -498,6 +662,7 @@ async fn http_pipeline_template_transform_sends_payload_to_sqs_target() {
                 method: "POST".to_string(),
                 path: "/pipe/{tenant}".to_string(),
             }),
+            validate: None,
             transform: Some(TransformConfig::Template(TemplateTransformConfig {
                 output: TransformTemplateOutput {
                     attributes: Some(BTreeMap::from([
@@ -577,6 +742,7 @@ async fn http_pipeline_template_transform_sends_payload_and_headers_to_http_targ
                 method: "POST".to_string(),
                 path: "/pipe".to_string(),
             }),
+            validate: None,
             transform: Some(TransformConfig::Template(TemplateTransformConfig {
                 output: TransformTemplateOutput {
                     headers: Some(BTreeMap::from([(
@@ -650,6 +816,7 @@ async fn http_pipeline_reports_failed_http_target() {
                 method: "POST".to_string(),
                 path: "/pipe".to_string(),
             }),
+            validate: None,
             transform: None,
             target: TargetConfig::Http(HttpTargetConfig {
                 method: "POST".to_string(),
@@ -709,6 +876,7 @@ async fn sqs_pipeline_sends_payload_to_http_target_and_deletes_source_message() 
                 wait_time_seconds: 0,
                 visibility_timeout_seconds: Some(5),
             }),
+            validate: None,
             transform: None,
             target: TargetConfig::Http(HttpTargetConfig {
                 method: "POST".to_string(),
@@ -765,6 +933,7 @@ async fn sqs_pipeline_template_transform_sends_payload_and_headers_to_http_targe
                 wait_time_seconds: 0,
                 visibility_timeout_seconds: Some(5),
             }),
+            validate: None,
             transform: Some(TransformConfig::Template(TemplateTransformConfig {
                 output: TransformTemplateOutput {
                     headers: Some(BTreeMap::from([(
@@ -831,6 +1000,116 @@ async fn sqs_pipeline_template_transform_sends_payload_and_headers_to_http_targe
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sqs_pipeline_jsonschema_validation_allows_valid_payload_and_deletes_source_message() {
+    let captured = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let target_addr = spawn_http_target(captured.clone()).await;
+    let sqs = MockSqs::spawn(vec![MockSqsMessage {
+        message_id: "source-message-1".to_string(),
+        receipt_handle: "receipt-1".to_string(),
+        body: r#"{"id":"ord-1","tenant":"acme","total":42}"#.to_string(),
+    }])
+    .await;
+    let bridge_config = BridgeConfig {
+        routes: Vec::new(),
+        pipeline: Some(PipelineConfig {
+            id: "sqs-to-http-validated".to_string(),
+            enabled: true,
+            source: SourceConfig::Sqs(SqsSourceConfig {
+                queue: None,
+                queue_url: Some(sqs.queue_url("input")),
+                batch_size: 1,
+                wait_time_seconds: 0,
+                visibility_timeout_seconds: Some(5),
+            }),
+            validate: Some(order_jsonschema_validate_config()),
+            transform: None,
+            target: TargetConfig::Http(HttpTargetConfig {
+                method: "POST".to_string(),
+                url: format!("http://{target_addr}/target"),
+                headers: None,
+                timeout_ms: Some(1000),
+            }),
+        }),
+    };
+
+    let _router = setup_router_with_sqs_client(
+        bridge_config,
+        Arc::new(NoopDispatcher),
+        test_sqs_client_for(sqs.endpoint_url()),
+    )
+    .await;
+
+    wait_until(Duration::from_secs(3), || {
+        let captured = captured.clone();
+        async move { !captured.lock().await.is_empty() }
+    })
+    .await;
+    assert_eq!(
+        captured.lock().await.as_slice(),
+        [r#"{"id":"ord-1","tenant":"acme","total":42}"#]
+    );
+    wait_until(Duration::from_secs(3), || {
+        let sqs = sqs.clone();
+        async move {
+            sqs.deleted_receipts()
+                .await
+                .contains(&"receipt-1".to_string())
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sqs_pipeline_jsonschema_validation_rejects_invalid_payload_without_deleting_message() {
+    let captured = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let target_addr = spawn_http_target(captured.clone()).await;
+    let sqs = MockSqs::spawn(vec![MockSqsMessage {
+        message_id: "source-message-1".to_string(),
+        receipt_handle: "receipt-1".to_string(),
+        body: r#"{"id":"ord-1","tenant":"acme","total":"invalid"}"#.to_string(),
+    }])
+    .await;
+    let bridge_config = BridgeConfig {
+        routes: Vec::new(),
+        pipeline: Some(PipelineConfig {
+            id: "sqs-to-http-rejected".to_string(),
+            enabled: true,
+            source: SourceConfig::Sqs(SqsSourceConfig {
+                queue: None,
+                queue_url: Some(sqs.queue_url("input")),
+                batch_size: 1,
+                wait_time_seconds: 0,
+                visibility_timeout_seconds: Some(5),
+            }),
+            validate: Some(order_jsonschema_validate_config()),
+            transform: None,
+            target: TargetConfig::Http(HttpTargetConfig {
+                method: "POST".to_string(),
+                url: format!("http://{target_addr}/target"),
+                headers: None,
+                timeout_ms: Some(1000),
+            }),
+        }),
+    };
+
+    let _router = setup_router_with_sqs_client(
+        bridge_config,
+        Arc::new(NoopDispatcher),
+        test_sqs_client_for(sqs.endpoint_url()),
+    )
+    .await;
+
+    wait_until(Duration::from_secs(3), || {
+        let sqs = sqs.clone();
+        async move { sqs.receive_count().await > 0 }
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(captured.lock().await.is_empty());
+    assert!(sqs.deleted_receipts().await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sqs_pipeline_sends_payload_to_sqs_target_and_deletes_source_message() {
     let sqs = MockSqs::spawn(vec![MockSqsMessage {
         message_id: "source-message-1".to_string(),
@@ -850,6 +1129,7 @@ async fn sqs_pipeline_sends_payload_to_sqs_target_and_deletes_source_message() {
                 wait_time_seconds: 0,
                 visibility_timeout_seconds: None,
             }),
+            validate: None,
             transform: None,
             target: TargetConfig::Sqs(SqsTargetConfig {
                 queue: None,
@@ -906,6 +1186,7 @@ async fn sqs_pipeline_template_transform_sends_attributes_to_sqs_target() {
                 wait_time_seconds: 0,
                 visibility_timeout_seconds: None,
             }),
+            validate: None,
             transform: Some(TransformConfig::Template(TemplateTransformConfig {
                 output: TransformTemplateOutput {
                     attributes: Some(BTreeMap::from([
@@ -1040,6 +1321,7 @@ struct MockSqsState {
     messages: tokio::sync::Mutex<VecDeque<MockSqsMessage>>,
     sent: tokio::sync::Mutex<Vec<MockSqsSend>>,
     deleted: tokio::sync::Mutex<Vec<String>>,
+    received: tokio::sync::Mutex<usize>,
 }
 
 #[derive(Clone)]
@@ -1063,6 +1345,7 @@ impl MockSqs {
             messages: tokio::sync::Mutex::new(messages.into()),
             sent: tokio::sync::Mutex::new(Vec::new()),
             deleted: tokio::sync::Mutex::new(Vec::new()),
+            received: tokio::sync::Mutex::new(0),
         });
         let app = Router::new()
             .route("/", post(handle_mock_sqs))
@@ -1095,6 +1378,10 @@ impl MockSqs {
     async fn deleted_receipts(&self) -> Vec<String> {
         self.state.deleted.lock().await.clone()
     }
+
+    async fn receive_count(&self) -> usize {
+        *self.state.received.lock().await
+    }
 }
 
 async fn handle_mock_sqs(
@@ -1124,6 +1411,7 @@ async fn handle_mock_sqs(
             }))
         }
         "AmazonSQS.ReceiveMessage" => {
+            *state.received.lock().await += 1;
             let message = state.messages.lock().await.pop_front();
             let messages = message
                 .map(|message| {

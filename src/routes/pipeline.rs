@@ -90,6 +90,10 @@ async fn handle_pipeline_http(
 }
 
 fn http_status_for_response(response: &CompletionResponse) -> StatusCode {
+    if response.status == "rejected" {
+        return StatusCode::UNPROCESSABLE_ENTITY;
+    }
+
     if response.status == "failed" {
         return StatusCode::BAD_GATEWAY;
     }

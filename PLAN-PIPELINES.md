@@ -2522,6 +2522,18 @@ transform:
 - Garantir que target nao seja chamado quando validacao falhar.
 - Adicionar span `postio.pipeline.validate`.
 
+Status da primeira fatia:
+
+- `[x]` `validate.engine: jsonschema` com `schema` inline.
+- `[x]` Fallback noop quando `validate` nao existe.
+- `[x]` HTTP source retorna `422` e `status: rejected` quando a validacao falha.
+- `[x]` SQS source nao deleta a mensagem quando a validacao falha.
+- `[x]` Target nao e chamado quando a validacao falha.
+- `[ ]` `schemaRef`.
+- `[ ]` `validation.steps`.
+- `[ ]` `onValidationFailure`.
+- `[ ]` Engines `contentType`, `rhai`, `http` e `grpc`.
+
 ### Fase 11: Response Transform E Completion
 
 - Permitir manipular resposta do target.

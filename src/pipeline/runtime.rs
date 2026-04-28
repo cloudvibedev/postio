@@ -17,10 +17,11 @@ use crate::{
     pipeline::{
         config::{PipelineConfig, SourceConfig, TargetConfig, TransformConfig},
         model::{
-            CompletionResponse, MessageMetadata, Payload, PipelineMessage, PipelineResult,
-            SourceContext, TargetRequestOverrides, TargetResponse, TraceContext,
+            CompletionResponse, MessageMetadata, Payload, PipelineFailure, PipelineMessage,
+            PipelineResult, SourceContext, TargetRequestOverrides, TargetResponse, TraceContext,
         },
         resources::PipelineResources,
+        validation::PipelineValidator,
     },
 };
 
@@ -42,8 +43,16 @@ impl PipelineRuntime {
         let (target_tx, target_rx) = mpsc::channel(DEFAULT_CHANNEL_BUFFER);
         let (completion_tx, completion_rx) = mpsc::channel(DEFAULT_CHANNEL_BUFFER);
 
+        let validator = PipelineValidator::compile(config.validate.clone())
+            .expect("pipeline validator should be valid before runtime startup");
+
         tokio::spawn(run_decode_worker(input_rx, validate_tx));
-        tokio::spawn(run_validate_noop_worker(validate_rx, transform_tx));
+        tokio::spawn(run_validate_worker(
+            validate_rx,
+            transform_tx,
+            completion_tx.clone(),
+            validator,
+        ));
         tokio::spawn(run_transform_worker(
             transform_rx,
             target_tx,
@@ -156,20 +165,52 @@ async fn run_decode_worker(
     }
 }
 
-async fn run_validate_noop_worker(
+async fn run_validate_worker(
     mut rx: mpsc::Receiver<PipelineMessage>,
     tx: mpsc::Sender<PipelineMessage>,
+    completion_tx: mpsc::Sender<PipelineResult>,
+    validator: PipelineValidator,
 ) {
     while let Some(message) = rx.recv().await {
+        let engine = validator.engine_name();
         let span = message.trace.child_span(info_span!(
             "postio.pipeline.validate",
             pipeline.id = %message.pipeline_id,
             request.id = %message.id,
-            engine = "noop"
+            engine = engine,
+            result.status = tracing::field::Empty,
+            validation.error_count = tracing::field::Empty
         ));
         async {
-            if tx.send(message).await.is_err() {
-                warn!("pipeline transform channel closed");
+            match validator.validate(&message.payload) {
+                Ok(()) => {
+                    tracing::Span::current().record("result.status", "accepted");
+                    tracing::Span::current().record("validation.error_count", 0);
+                    if tx.send(message).await.is_err() {
+                        warn!("pipeline transform channel closed");
+                    }
+                }
+                Err(failure) => {
+                    tracing::Span::current().record("result.status", "rejected");
+                    tracing::Span::current()
+                        .record("validation.error_count", failure.details.len());
+                    warn!(
+                        pipeline.id = %message.pipeline_id,
+                        request.id = %message.id,
+                        validation.error_count = failure.details.len(),
+                        "payload validation rejected"
+                    );
+                    if completion_tx
+                        .send(PipelineResult {
+                            message,
+                            target: Err(PipelineFailure::Validation(failure)),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        warn!("pipeline completion channel closed");
+                    }
+                }
             }
         }
         .instrument(span)
@@ -314,7 +355,7 @@ async fn run_target_worker(
         }
         .instrument(span)
         .await
-        .map_err(|error| error.to_string());
+        .map_err(|error| PipelineFailure::Target(error.to_string()));
         if tx.send(PipelineResult { message, target }).await.is_err() {
             warn!("pipeline completion channel closed");
         }
@@ -360,9 +401,10 @@ async fn run_completion_worker(
                         body: target.body,
                         message_id: target.message_id,
                         error: None,
+                        details: None,
                     }
                 }
-                Err(error) => CompletionResponse {
+                Err(PipelineFailure::Target(error)) => CompletionResponse {
                     pipeline_id: result.message.pipeline_id.clone(),
                     request_id: result.message.id.to_string(),
                     status: "failed".to_string(),
@@ -371,6 +413,18 @@ async fn run_completion_worker(
                     body: None,
                     message_id: None,
                     error: Some(error),
+                    details: None,
+                },
+                Err(PipelineFailure::Validation(failure)) => CompletionResponse {
+                    pipeline_id: result.message.pipeline_id.clone(),
+                    request_id: result.message.id.to_string(),
+                    status: "rejected".to_string(),
+                    target_type: None,
+                    target_status_code: None,
+                    body: None,
+                    message_id: None,
+                    error: Some(failure.error),
+                    details: Some(failure.details),
                 },
             };
 

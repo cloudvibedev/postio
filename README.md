@@ -77,7 +77,7 @@ O bloco `pipeline` executa uma unica pipeline por processo/deployment Postio. El
 Fluxo interno atual:
 
 ```text
-source -> decode -> validate(noop) -> transform(noop/template) -> target -> completion
+source -> decode -> validate(noop/jsonschema) -> transform(noop/template) -> target -> completion
 ```
 
 Escopo implementado nesta versao:
@@ -86,7 +86,7 @@ Escopo implementado nesta versao:
 - Source `sqs`: faz polling da fila, envia cada mensagem para a pipeline e remove a mensagem apos sucesso no target.
 - Target `http`: envia o payload para um endpoint externo.
 - Target `sqs`: envia o payload para uma fila SQS.
-- Validate: sempre retorna valido.
+- Validate: retorna valido quando ausente; quando configurado com `engine: jsonschema`, valida o payload antes do transform e bloqueia o target em caso de rejeicao.
 - Transform: retorna o payload original quando ausente; quando configurado com `engine: template`, pode montar body, headers, query, atributos e outros overrides de saida.
 
 ### Schema raiz
@@ -99,6 +99,15 @@ pipeline:
     type: http
     method: POST
     path: /orders
+  validate:
+    engine: jsonschema
+    schema:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: string
   transform:
     engine: template
     output:
@@ -115,6 +124,7 @@ pipeline:
 | `id` | sim | - | Identificador da pipeline. Aparece em logs, spans e respostas. |
 | `enabled` | nao | `true` | Liga ou desliga a pipeline. |
 | `source` | sim | - | Entrada da pipeline. Nesta fase pode ser `http` ou `sqs`. |
+| `validate` | nao | noop | Validacao opcional antes do transform. Nesta fase suporta `engine: jsonschema` com schema inline. |
 | `transform` | nao | noop | Transformacao opcional antes do target. Nesta fase suporta `engine: template`. |
 | `target` | sim | - | Saida da pipeline. Nesta fase pode ser `http` ou `sqs`. |
 
@@ -296,6 +306,68 @@ pipeline:
 | `queue` | condicional | - | Nome ou URL da fila. Obrigatorio quando `queueUrl` nao existe. |
 | `queueUrl` | condicional | - | URL completa da fila. Se informada, e usada diretamente. |
 | `delaySeconds` | nao | AWS default | Delay aplicado ao envio da mensagem. |
+
+### Validate JSON Schema
+
+O validate `jsonschema` valida o payload decodificado antes do transform. Quando `validate` nao existe, a pipeline continua em modo noop e aceita o payload.
+
+```yaml
+pipeline:
+  id: http-to-sqs-validated
+  source:
+    type: http
+    method: POST
+    path: /orders
+  validate:
+    engine: jsonschema
+    schema:
+      type: object
+      required:
+        - id
+        - tenant
+        - total
+      properties:
+        id:
+          type: string
+        tenant:
+          type: string
+        total:
+          type: number
+  target:
+    type: sqs
+    queue: orders-output
+```
+
+Campos de `validate`:
+
+| Propriedade | Obrigatoria | Padrao | Descricao |
+| --- | --- | --- | --- |
+| `engine` | sim | - | Deve ser `jsonschema`. |
+| `schema` | sim | - | JSON Schema inline usado para validar o payload decodificado. |
+
+Comportamento atual:
+
+| Source | Payload valido | Payload invalido |
+| --- | --- | --- |
+| HTTP | Segue para `transform` e `target`. | Retorna `422 Unprocessable Entity`, `status: rejected`, `error: validation failed` e nao chama o target. |
+| SQS | Segue para `transform` e `target`; em sucesso, deleta a mensagem original. | Nao chama o target e nao deleta a mensagem original; ela volta apos o visibility timeout. |
+
+Resposta HTTP em caso de rejeicao:
+
+```json
+{
+  "pipelineId": "http-to-sqs-validated",
+  "requestId": "7a8a0a41-8b9b-47b8-9288-29cbb9af5d7d",
+  "status": "rejected",
+  "error": "validation failed",
+  "details": [
+    {
+      "path": "/total",
+      "message": "\"invalid\" is not of type \"number\""
+    }
+  ]
+}
+```
 
 ### Transform Template
 
@@ -1270,7 +1342,9 @@ src/
       source.rs     # schemas de source HTTP/SQS
       target.rs     # schemas de target HTTP/SQS
       transform.rs  # schemas de transform
+      validate.rs   # schemas de validacao
     runtime.rs      # workers internos da pipeline
+    validation/     # engines de validacao
   routes/
     ingest.rs       # rotas dinamicas de injestao
     system.rs       # health e echo

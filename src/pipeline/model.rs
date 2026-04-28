@@ -105,7 +105,7 @@ pub struct TargetRequestOverrides {
 #[derive(Debug)]
 pub struct PipelineResult {
     pub message: PipelineMessage,
-    pub target: Result<TargetResponse, String>,
+    pub target: Result<TargetResponse, PipelineFailure>,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +114,25 @@ pub struct TargetResponse {
     pub status_code: u16,
     pub body: Option<String>,
     pub message_id: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum PipelineFailure {
+    Target(String),
+    Validation(ValidationFailure),
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidationFailure {
+    pub error: String,
+    pub details: Vec<ValidationErrorDetail>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidationErrorDetail {
+    pub path: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -132,6 +151,8 @@ pub struct CompletionResponse {
     pub message_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Vec<ValidationErrorDetail>>,
 }
 
 impl Payload {
