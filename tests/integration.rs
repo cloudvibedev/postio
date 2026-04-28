@@ -1,14 +1,16 @@
-use std::net::{IpAddr, Ipv4Addr};
+use std::collections::VecDeque;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use aws_sdk_sqs::{
     config::{Credentials, Region},
     Client as SqsClient,
 };
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::State as AxumState,
-    http::{Method, Request, StatusCode},
+    http::{HeaderMap, Method, Request, StatusCode},
     response::Response,
     routing::post,
     Json, Router,
@@ -49,6 +51,14 @@ async fn setup_router_with_bridge_config(
     bridge_config: BridgeConfig,
     dispatcher: Arc<dyn SinkDispatcher>,
 ) -> Router {
+    setup_router_with_sqs_client(bridge_config, dispatcher, test_sqs_client()).await
+}
+
+async fn setup_router_with_sqs_client(
+    bridge_config: BridgeConfig,
+    dispatcher: Arc<dyn SinkDispatcher>,
+    sqs: SqsClient,
+) -> Router {
     init_telemetry().await;
     let state = match bridge_config
         .pipeline
@@ -59,7 +69,7 @@ async fn setup_router_with_bridge_config(
             dispatcher,
             PipelineRuntime::spawn(
                 pipeline,
-                PipelineResources::new(test_sqs_client(), reqwest::Client::new()),
+                PipelineResources::new(sqs, reqwest::Client::new()),
             ),
         ),
         None => AppState::new(dispatcher),
@@ -82,6 +92,16 @@ fn test_sqs_client() -> SqsClient {
         .region(Region::new("us-east-1"))
         .credentials_provider(Credentials::for_tests())
         .endpoint_url("http://127.0.0.1:4566")
+        .build();
+    SqsClient::from_conf(config)
+}
+
+fn test_sqs_client_for(endpoint_url: String) -> SqsClient {
+    let config = aws_sdk_sqs::Config::builder()
+        .behavior_version_latest()
+        .region(Region::new("us-east-1"))
+        .credentials_provider(Credentials::for_tests())
+        .endpoint_url(endpoint_url)
         .build();
     SqsClient::from_conf(config)
 }
@@ -282,8 +302,9 @@ async fn configured_ingest_route_dispatches_to_sink() {
         .await
         .expect("request failed");
 
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let status = response.status();
     let body = response_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     assert_eq!(body["routeId"], "events");
     assert_eq!(body["sink"], "test");
     let calls = dispatcher.calls.lock().expect("calls");
@@ -360,18 +381,7 @@ async fn multipart_ingest_route_extracts_form_fields_and_file() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn http_pipeline_sends_payload_to_http_target() {
     let captured = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
-    let target_app = Router::new()
-        .route("/target", post(capture_pipeline_target))
-        .with_state(captured.clone());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind target server");
-    let target_addr = listener.local_addr().expect("target addr");
-    tokio::spawn(async move {
-        axum::serve(listener, target_app)
-            .await
-            .expect("target server failed");
-    });
+    let target_addr = spawn_http_target(captured.clone()).await;
 
     let bridge_config = BridgeConfig {
         routes: Vec::new(),
@@ -416,12 +426,330 @@ async fn http_pipeline_sends_payload_to_http_target() {
     assert_eq!(captured.as_slice(), [r#"{"hello":"pipeline"}"#]);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_pipeline_sends_payload_to_sqs_target() {
+    let sqs = MockSqs::spawn(vec![]).await;
+    let bridge_config = BridgeConfig {
+        routes: Vec::new(),
+        pipeline: Some(PipelineConfig {
+            id: "http-to-sqs".to_string(),
+            enabled: true,
+            source: SourceConfig::Http {
+                method: "POST".to_string(),
+                path: "/pipe".to_string(),
+            },
+            target: TargetConfig::Sqs {
+                queue: None,
+                queue_url: Some(sqs.queue_url("output")),
+                delay_seconds: Some(3),
+            },
+        }),
+    };
+    let router = setup_router_with_sqs_client(
+        bridge_config,
+        Arc::new(NoopDispatcher),
+        test_sqs_client_for(sqs.endpoint_url()),
+    )
+    .await;
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/pipe")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"hello":"sqs"}"#))
+                .expect("build request"),
+        )
+        .await
+        .expect("request failed");
+
+    let status = response.status();
+    let body = response_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["pipelineId"], "http-to-sqs");
+    assert_eq!(body["status"], "accepted");
+    assert_eq!(body["targetType"], "sqs");
+    assert_eq!(body["targetStatusCode"], 202);
+    assert_eq!(body["messageId"], "mock-sent-1");
+    let sent = sqs.sent_messages().await;
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].queue_url, sqs.queue_url("output"));
+    assert_eq!(sent[0].body, r#"{"hello":"sqs"}"#);
+    assert_eq!(sent[0].delay_seconds, Some(3));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sqs_pipeline_sends_payload_to_http_target_and_deletes_source_message() {
+    let captured = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let target_addr = spawn_http_target(captured.clone()).await;
+    let sqs = MockSqs::spawn(vec![MockSqsMessage {
+        message_id: "source-message-1".to_string(),
+        receipt_handle: "receipt-1".to_string(),
+        body: r#"{"from":"sqs"}"#.to_string(),
+    }])
+    .await;
+    let bridge_config = BridgeConfig {
+        routes: Vec::new(),
+        pipeline: Some(PipelineConfig {
+            id: "sqs-to-http".to_string(),
+            enabled: true,
+            source: SourceConfig::Sqs {
+                queue: None,
+                queue_url: Some(sqs.queue_url("input")),
+                batch_size: 1,
+                wait_time_seconds: 0,
+                visibility_timeout_seconds: Some(5),
+            },
+            target: TargetConfig::Http {
+                method: "POST".to_string(),
+                url: format!("http://{target_addr}/target"),
+                headers: None,
+                timeout_ms: Some(1000),
+            },
+        }),
+    };
+
+    let _router = setup_router_with_sqs_client(
+        bridge_config,
+        Arc::new(NoopDispatcher),
+        test_sqs_client_for(sqs.endpoint_url()),
+    )
+    .await;
+
+    wait_until(Duration::from_secs(3), || {
+        let captured = captured.clone();
+        async move { !captured.lock().await.is_empty() }
+    })
+    .await;
+    assert_eq!(captured.lock().await.as_slice(), [r#"{"from":"sqs"}"#]);
+    wait_until(Duration::from_secs(3), || {
+        let sqs = sqs.clone();
+        async move {
+            sqs.deleted_receipts()
+                .await
+                .contains(&"receipt-1".to_string())
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sqs_pipeline_sends_payload_to_sqs_target_and_deletes_source_message() {
+    let sqs = MockSqs::spawn(vec![MockSqsMessage {
+        message_id: "source-message-1".to_string(),
+        receipt_handle: "receipt-1".to_string(),
+        body: r#"{"relay":"sqs"}"#.to_string(),
+    }])
+    .await;
+    let bridge_config = BridgeConfig {
+        routes: Vec::new(),
+        pipeline: Some(PipelineConfig {
+            id: "sqs-to-sqs".to_string(),
+            enabled: true,
+            source: SourceConfig::Sqs {
+                queue: None,
+                queue_url: Some(sqs.queue_url("input")),
+                batch_size: 1,
+                wait_time_seconds: 0,
+                visibility_timeout_seconds: None,
+            },
+            target: TargetConfig::Sqs {
+                queue: None,
+                queue_url: Some(sqs.queue_url("output")),
+                delay_seconds: None,
+            },
+        }),
+    };
+
+    let _router = setup_router_with_sqs_client(
+        bridge_config,
+        Arc::new(NoopDispatcher),
+        test_sqs_client_for(sqs.endpoint_url()),
+    )
+    .await;
+
+    wait_until(Duration::from_secs(3), || {
+        let sqs = sqs.clone();
+        async move { !sqs.sent_messages().await.is_empty() }
+    })
+    .await;
+    let sent = sqs.sent_messages().await;
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].queue_url, sqs.queue_url("output"));
+    assert_eq!(sent[0].body, r#"{"relay":"sqs"}"#);
+    wait_until(Duration::from_secs(3), || {
+        let sqs = sqs.clone();
+        async move {
+            sqs.deleted_receipts()
+                .await
+                .contains(&"receipt-1".to_string())
+        }
+    })
+    .await;
+}
+
+async fn spawn_http_target(captured: Arc<tokio::sync::Mutex<Vec<String>>>) -> SocketAddr {
+    let target_app = Router::new()
+        .route("/target", post(capture_pipeline_target))
+        .with_state(captured);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind target server");
+    let target_addr = listener.local_addr().expect("target addr");
+    tokio::spawn(async move {
+        axum::serve(listener, target_app)
+            .await
+            .expect("target server failed");
+    });
+    target_addr
+}
+
 async fn capture_pipeline_target(
     AxumState(captured): AxumState<Arc<tokio::sync::Mutex<Vec<String>>>>,
     body: String,
 ) -> Json<Value> {
     captured.lock().await.push(body);
     Json(serde_json::json!({ "received": true }))
+}
+
+#[derive(Clone)]
+struct MockSqs {
+    addr: SocketAddr,
+    state: Arc<MockSqsState>,
+}
+
+#[derive(Default)]
+struct MockSqsState {
+    messages: tokio::sync::Mutex<VecDeque<MockSqsMessage>>,
+    sent: tokio::sync::Mutex<Vec<MockSqsSend>>,
+    deleted: tokio::sync::Mutex<Vec<String>>,
+}
+
+#[derive(Clone)]
+struct MockSqsMessage {
+    message_id: String,
+    receipt_handle: String,
+    body: String,
+}
+
+#[derive(Clone, Debug)]
+struct MockSqsSend {
+    queue_url: String,
+    body: String,
+    delay_seconds: Option<i64>,
+}
+
+impl MockSqs {
+    async fn spawn(messages: Vec<MockSqsMessage>) -> Self {
+        let state = Arc::new(MockSqsState {
+            messages: tokio::sync::Mutex::new(messages.into()),
+            sent: tokio::sync::Mutex::new(Vec::new()),
+            deleted: tokio::sync::Mutex::new(Vec::new()),
+        });
+        let app = Router::new()
+            .route("/", post(handle_mock_sqs))
+            .fallback(post(handle_mock_sqs))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock sqs");
+        let addr = listener.local_addr().expect("mock sqs addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("mock sqs server failed");
+        });
+        Self { addr, state }
+    }
+
+    fn endpoint_url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+
+    fn queue_url(&self, queue: &str) -> String {
+        format!("http://{}/000000000000/{queue}", self.addr)
+    }
+
+    async fn sent_messages(&self) -> Vec<MockSqsSend> {
+        self.state.sent.lock().await.clone()
+    }
+
+    async fn deleted_receipts(&self) -> Vec<String> {
+        self.state.deleted.lock().await.clone()
+    }
+}
+
+async fn handle_mock_sqs(
+    AxumState(state): AxumState<Arc<MockSqsState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Json<Value> {
+    let body: Value = serde_json::from_slice(&body).expect("mock sqs request must be json");
+    let target = headers
+        .get("x-amz-target")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+
+    match target {
+        "AmazonSQS.SendMessage" => {
+            let mut sent = state.sent.lock().await;
+            let message_id = format!("mock-sent-{}", sent.len() + 1);
+            sent.push(MockSqsSend {
+                queue_url: body["QueueUrl"].as_str().unwrap_or_default().to_string(),
+                body: body["MessageBody"].as_str().unwrap_or_default().to_string(),
+                delay_seconds: body["DelaySeconds"].as_i64(),
+            });
+            Json(serde_json::json!({
+                "MD5OfMessageBody": "mock-md5",
+                "MessageId": message_id
+            }))
+        }
+        "AmazonSQS.ReceiveMessage" => {
+            let message = state.messages.lock().await.pop_front();
+            let messages = message
+                .map(|message| {
+                    vec![serde_json::json!({
+                        "MessageId": message.message_id,
+                        "ReceiptHandle": message.receipt_handle,
+                        "Body": message.body
+                    })]
+                })
+                .unwrap_or_default();
+            Json(serde_json::json!({ "Messages": messages }))
+        }
+        "AmazonSQS.DeleteMessage" => {
+            if let Some(receipt_handle) = body["ReceiptHandle"].as_str() {
+                state.deleted.lock().await.push(receipt_handle.to_string());
+            }
+            Json(serde_json::json!({}))
+        }
+        "AmazonSQS.GetQueueUrl" => {
+            let queue_name = body["QueueName"].as_str().unwrap_or("queue");
+            Json(serde_json::json!({
+                "QueueUrl": format!("http://mock-sqs/000000000000/{queue_name}")
+            }))
+        }
+        _ => Json(serde_json::json!({})),
+    }
+}
+
+async fn wait_until<F, Fut>(timeout: Duration, mut condition: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    tokio::time::timeout(timeout, async {
+        loop {
+            if condition().await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("condition timed out");
 }
 
 struct NoopDispatcher;
