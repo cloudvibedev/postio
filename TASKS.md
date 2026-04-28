@@ -53,6 +53,8 @@ Este arquivo acompanha as proximas tarefas praticas do Postio. Sempre revisar ju
 - `POST /postio/s3` retornou `201 Created` e o objeto salvo no bucket continha o payload `v0-s3-json-1777340667`.
 - `POST /postio/s3/multipart-test` retornou `201 Created` e o objeto salvo no bucket continha o arquivo `v0-s3-multipart-1777340682.txt`.
 - `POST /postio/pipeline/template/sqs/acme?source=checkout` retornou `202 Accepted` com `messageId=ced2bf5b-9ed6-4806-b4ae-63450007a847`.
+- A mensagem `ced2bf5b-9ed6-4806-b4ae-63450007a847` foi lida diretamente do SQS com `message-attribute-names=All`.
+- Attributes validados no SQS: `event=order.attributes.trace`, `tenant=acme`, `priority=7`, `source=checkout`.
 
 ## Observabilidade
 
@@ -128,16 +130,15 @@ Notas da primeira entrega:
 - `[x]` Atualizar `PLAN-PIPELINES.md` marcando `attributes` como suportado para SQS.
 - `[x]` Publicar imagem com suporte a attributes e acompanhar GitHub Actions.
 - `[x]` Atualizar sandbox para a nova imagem.
-- `[!]` Validar `transform.output.attributes` no sandbox.
+- `[x]` Validar `transform.output.attributes` no sandbox.
 
 Notas:
 
 - A policy ACK/IAM foi ajustada para permitir `sqs:ReceiveMessage` na fila `postio-sqs-input`.
 - A rota sandbox `POST /postio/pipeline/template/sqs/{tenant}` foi criada e retornou `202 Accepted` gravando no SQS.
-- A leitura direta dos atributos SQS no sandbox ficou bloqueada nesta rodada porque:
-  - o token SSO usado pelo `kubectl` expirou e nao renovou automaticamente; e
-  - em seguida os hostnames `gateway.sdx.autob` e `grafana.o11y.sdx.autob` pararam de resolver na sessao local.
-- Assim que o SSO/DNS da VPN estiver OK, validar a mensagem `ced2bf5b-9ed6-4806-b4ae-63450007a847` ou reenviar novo payload e ler com `message-attribute-names=All`.
+- O token SSO foi renovado com `aws sso login --profile autosbx --use-device-code`.
+- Como o DNS/rota local para o Gateway seguiu instavel, a validacao final dos atributos foi feita diretamente via AWS SQS.
+- A mensagem `ced2bf5b-9ed6-4806-b4ae-63450007a847` confirmou attributes `event`, `tenant`, `priority` e `source`.
 
 ### Rotas De Validacao Em Sandbox
 
@@ -177,5 +178,5 @@ Notas:
 - `[!]` Argo CD esta `Synced`, mas com health global `Degraded` por `RepeatedResourceWarning` do namespace `cloudvibe`; nao parece ser causado pelo Postio.
 - `[x]` O hostname direto do Tempo nao respondeu durante a validacao; os traces foram validados via proxy de datasource do Grafana.
 - `[x]` A role IAM `postio-ingestion-api` agora declara `sqs:ReceiveMessage` para a fila `postio-sqs-input`.
-- `[!]` O token SSO local do AWS/kubectl expirou durante a validacao de attributes.
-- `[!]` A resolucao DNS local para `gateway.sdx.autob` e `grafana.o11y.sdx.autob` falhou depois do teste `POST /postio/pipeline/template/sqs/acme`.
+- `[x]` O token SSO local do AWS foi renovado durante a validacao de attributes.
+- `[!]` A resolucao DNS/rota local para `gateway.sdx.autob` e `grafana.o11y.sdx.autob` ficou instavel durante a validacao final.
