@@ -15,7 +15,10 @@ use uuid::Uuid;
 use crate::{
     bridge::template::{render_to_string, render_value, TemplateContext},
     pipeline::{
-        config::{PipelineConfig, SourceConfig, TargetConfig, TransformConfig},
+        config::{
+            HttpCompletionRule, PipelineConfig, SourceConfig, SqsCompletionAction,
+            SqsCompletionRule, SqsDeadLetterConfig, TargetConfig, TransformConfig,
+        },
         model::{
             CompletionResponse, MessageMetadata, Payload, PipelineFailure, PipelineMessage,
             PipelineResult, SourceContext, TargetRequestOverrides, TargetResponse, TraceContext,
@@ -64,7 +67,11 @@ impl PipelineRuntime {
             Arc::clone(&config),
             resources.clone(),
         ));
-        tokio::spawn(run_completion_worker(completion_rx, resources.clone()));
+        tokio::spawn(run_completion_worker(
+            completion_rx,
+            resources.clone(),
+            Arc::clone(&config),
+        ));
 
         let runtime = Self {
             config,
@@ -315,6 +322,33 @@ fn template_context(message: &PipelineMessage) -> TemplateContext {
     }
 }
 
+fn completion_template_context(
+    message: &PipelineMessage,
+    response: &CompletionResponse,
+) -> TemplateContext {
+    let mut ctx = template_context(message);
+    ctx.context
+        .insert("status".to_string(), response.status.clone());
+    if let Some(target_type) = &response.target_type {
+        ctx.context
+            .insert("targetType".to_string(), target_type.clone());
+    }
+    if let Some(target_status_code) = response.target_status_code {
+        ctx.context.insert(
+            "targetStatusCode".to_string(),
+            target_status_code.to_string(),
+        );
+    }
+    if let Some(message_id) = &response.message_id {
+        ctx.context
+            .insert("messageId".to_string(), message_id.clone());
+    }
+    if let Some(error) = &response.error {
+        ctx.context.insert("error".to_string(), error.clone());
+    }
+    ctx
+}
+
 async fn run_target_worker(
     mut rx: mpsc::Receiver<PipelineMessage>,
     tx: mpsc::Sender<PipelineResult>,
@@ -365,33 +399,22 @@ async fn run_target_worker(
 async fn run_completion_worker(
     mut rx: mpsc::Receiver<PipelineResult>,
     resources: PipelineResources,
+    config: Arc<PipelineConfig>,
 ) {
     while let Some(result) = rx.recv().await {
         let span = result.message.trace.child_span(info_span!(
             "postio.pipeline.complete",
             pipeline.id = %result.message.pipeline_id,
-            request.id = %result.message.id
+            request.id = %result.message.id,
+            source.type = result.message.source.type_name(),
+            completion.action = tracing::field::Empty,
+            result.status = tracing::field::Empty,
+            error.kind = tracing::field::Empty
         ));
         async {
-            let response = match result.target {
-                Ok(target) => {
-                    if let SourceContext::Sqs {
-                        queue_url,
-                        receipt_handle,
-                        ..
-                    } = &result.message.source
-                    {
-                        if let Err(error) = resources
-                            .sqs
-                            .delete_message()
-                            .queue_url(queue_url)
-                            .receipt_handle(receipt_handle)
-                            .send()
-                            .await
-                        {
-                            error!(%error, "failed to delete processed sqs message");
-                        }
-                    }
+            let (kind, mut response) = match result.target {
+                Ok(target) => (
+                    CompletionKind::Success,
                     CompletionResponse {
                         pipeline_id: result.message.pipeline_id.clone(),
                         request_id: result.message.id.to_string(),
@@ -402,31 +425,53 @@ async fn run_completion_worker(
                         message_id: target.message_id,
                         error: None,
                         details: None,
-                    }
-                }
-                Err(PipelineFailure::Target(error)) => CompletionResponse {
-                    pipeline_id: result.message.pipeline_id.clone(),
-                    request_id: result.message.id.to_string(),
-                    status: "failed".to_string(),
-                    target_type: None,
-                    target_status_code: None,
-                    body: None,
-                    message_id: None,
-                    error: Some(error),
-                    details: None,
-                },
-                Err(PipelineFailure::Validation(failure)) => CompletionResponse {
-                    pipeline_id: result.message.pipeline_id.clone(),
-                    request_id: result.message.id.to_string(),
-                    status: "rejected".to_string(),
-                    target_type: None,
-                    target_status_code: None,
-                    body: None,
-                    message_id: None,
-                    error: Some(failure.error),
-                    details: Some(failure.details),
-                },
+                        http_status_code: None,
+                        http_body: None,
+                    },
+                ),
+                Err(PipelineFailure::Target(error)) => (
+                    CompletionKind::TargetFailure,
+                    CompletionResponse {
+                        pipeline_id: result.message.pipeline_id.clone(),
+                        request_id: result.message.id.to_string(),
+                        status: "failed".to_string(),
+                        target_type: None,
+                        target_status_code: None,
+                        body: None,
+                        message_id: None,
+                        error: Some(error),
+                        details: None,
+                        http_status_code: None,
+                        http_body: None,
+                    },
+                ),
+                Err(PipelineFailure::Validation(failure)) => (
+                    CompletionKind::ValidationFailure,
+                    CompletionResponse {
+                        pipeline_id: result.message.pipeline_id.clone(),
+                        request_id: result.message.id.to_string(),
+                        status: "rejected".to_string(),
+                        target_type: None,
+                        target_status_code: None,
+                        body: None,
+                        message_id: None,
+                        error: Some(failure.error),
+                        details: Some(failure.details),
+                        http_status_code: None,
+                        http_body: None,
+                    },
+                ),
             };
+
+            complete_source(
+                &config.source,
+                &resources,
+                &result.message,
+                kind,
+                &mut response,
+            )
+            .await;
+            tracing::Span::current().record("result.status", response.status.as_str());
 
             if let Some(reply) = result.message.reply {
                 let _ = reply.send(response);
@@ -435,6 +480,183 @@ async fn run_completion_worker(
         .instrument(span)
         .await;
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CompletionKind {
+    Success,
+    TargetFailure,
+    ValidationFailure,
+}
+
+async fn complete_source(
+    source_config: &SourceConfig,
+    resources: &PipelineResources,
+    message: &PipelineMessage,
+    kind: CompletionKind,
+    response: &mut CompletionResponse,
+) {
+    match (&message.source, source_config) {
+        (SourceContext::Http { .. }, SourceConfig::Http(config)) => {
+            let rule = config
+                .completion
+                .as_ref()
+                .and_then(|completion| match kind {
+                    CompletionKind::Success => completion.on_success.as_ref(),
+                    CompletionKind::TargetFailure => completion.on_failure.as_ref(),
+                    CompletionKind::ValidationFailure => completion.on_validation_failure.as_ref(),
+                });
+            apply_http_completion(rule, message, response);
+        }
+        (
+            SourceContext::Sqs {
+                queue_url,
+                receipt_handle,
+                ..
+            },
+            SourceConfig::Sqs(config),
+        ) => {
+            let rule = config
+                .completion
+                .as_ref()
+                .and_then(|completion| match kind {
+                    CompletionKind::Success => completion.on_success.as_ref(),
+                    CompletionKind::TargetFailure => completion.on_failure.as_ref(),
+                    CompletionKind::ValidationFailure => completion.on_validation_failure.as_ref(),
+                });
+            let default_action = match kind {
+                CompletionKind::Success => SqsCompletionAction::Ack,
+                CompletionKind::TargetFailure | CompletionKind::ValidationFailure => {
+                    SqsCompletionAction::Retry
+                }
+            };
+            complete_sqs_source(
+                resources,
+                message,
+                queue_url,
+                receipt_handle,
+                rule,
+                default_action,
+            )
+            .await;
+        }
+        _ => {}
+    }
+}
+
+fn apply_http_completion(
+    rule: Option<&HttpCompletionRule>,
+    message: &PipelineMessage,
+    response: &mut CompletionResponse,
+) {
+    let Some(response_config) = rule.and_then(|rule| rule.response.as_ref()) else {
+        return;
+    };
+
+    if let Some(status) = response_config.status {
+        response.http_status_code = Some(status);
+    }
+    if let Some(body) = &response_config.body {
+        let ctx = completion_template_context(message, response);
+        response.http_body = Some(render_value(body, &ctx));
+    }
+}
+
+async fn complete_sqs_source(
+    resources: &PipelineResources,
+    message: &PipelineMessage,
+    queue_url: &str,
+    receipt_handle: &str,
+    rule: Option<&SqsCompletionRule>,
+    default_action: SqsCompletionAction,
+) {
+    let action = rule.and_then(|rule| rule.action).unwrap_or(default_action);
+    tracing::Span::current().record("completion.action", sqs_completion_action_name(action));
+
+    match action {
+        SqsCompletionAction::Ack | SqsCompletionAction::Drop => {
+            delete_sqs_source_message(resources, queue_url, receipt_handle).await;
+        }
+        SqsCompletionAction::Retry => {}
+        SqsCompletionAction::DeadLetter => {
+            let Some(dead_letter) = rule.and_then(|rule| rule.dead_letter.as_ref()) else {
+                tracing::Span::current().record("error.kind", "dead_letter_not_configured");
+                error!(
+                    pipeline.id = %message.pipeline_id,
+                    request.id = %message.id,
+                    "sqs completion requested deadLetter without deadLetter config"
+                );
+                return;
+            };
+            match send_sqs_dead_letter(resources, message, dead_letter).await {
+                Ok(()) => {
+                    delete_sqs_source_message(resources, queue_url, receipt_handle).await;
+                }
+                Err(error) => {
+                    tracing::Span::current().record("error.kind", "dead_letter_send_failed");
+                    error!(
+                        %error,
+                        pipeline.id = %message.pipeline_id,
+                        request.id = %message.id,
+                        "failed to send sqs dead letter message"
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn sqs_completion_action_name(action: SqsCompletionAction) -> &'static str {
+    match action {
+        SqsCompletionAction::Ack => "ack",
+        SqsCompletionAction::Retry => "retry",
+        SqsCompletionAction::Drop => "drop",
+        SqsCompletionAction::DeadLetter => "deadLetter",
+    }
+}
+
+async fn delete_sqs_source_message(
+    resources: &PipelineResources,
+    queue_url: &str,
+    receipt_handle: &str,
+) {
+    if let Err(error) = resources
+        .sqs
+        .delete_message()
+        .queue_url(queue_url)
+        .receipt_handle(receipt_handle)
+        .send()
+        .await
+    {
+        tracing::Span::current().record("error.kind", "sqs_delete_failed");
+        error!(%error, "failed to delete processed sqs message");
+    }
+}
+
+async fn send_sqs_dead_letter(
+    resources: &PipelineResources,
+    message: &PipelineMessage,
+    dead_letter: &SqsDeadLetterConfig,
+) -> Result<()> {
+    let queue_url = resources
+        .resolve_queue_url(
+            dead_letter.queue.as_deref(),
+            dead_letter.queue_url.as_deref(),
+        )
+        .await?;
+    resources
+        .sqs
+        .send_message()
+        .queue_url(queue_url)
+        .message_body(message.payload.to_string_body())
+        .set_delay_seconds(dead_letter.delay_seconds)
+        .set_message_attributes(sqs_message_attributes(
+            &dead_letter.attributes.clone().unwrap_or_default(),
+        ))
+        .send()
+        .await
+        .context("failed to send sqs dead letter message")?;
+    Ok(())
 }
 
 async fn send_to_target(

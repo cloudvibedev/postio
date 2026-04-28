@@ -259,8 +259,7 @@ Campos:
 | `transform` | nao | Transformacao antes do target; padrao `noop` |
 | `target` | sim | Destino do pipeline |
 | `responseTransform` | nao | Transformacao da resposta do target |
-| `completion` | nao | Politica de resposta/ack/retry |
-| `onValidationFailure` | nao | Politica especifica para falha de validacao |
+| `source.completion` | nao | Politica de resposta/ack/retry/drop/deadLetter do source |
 
 ### InputConfig
 
@@ -833,7 +832,7 @@ source:
         status: 202
         body:
           ok: true
-          messageId: "{{ target.messageId }}"
+          messageId: "{{ context.messageId }}"
     onFailure:
       response:
         status: 502
@@ -862,7 +861,6 @@ source:
     onValidationFailure:
       action: deadLetter
       deadLetter:
-        type: sqs
         queue: postio-invalid-dlq
 ```
 
@@ -1184,7 +1182,6 @@ source:
     onValidationFailure:
       action: deadLetter
       deadLetter:
-        type: sqs
         queue: postio-invalid-dlq
 ```
 
@@ -1358,7 +1355,6 @@ source:
     onValidationFailure:
       action: deadLetter
       deadLetter:
-        type: sqs
         queue: postio-invalid-dlq
 ```
 
@@ -2222,7 +2218,7 @@ Escopo v1:
 - Targets `http` e `sqs` na primeira entrega.
 - Validate noop default.
 - Transform noop default.
-- Completion policy minima.
+- Completion policy minima com `source.completion`.
 
 Regra operacional v1:
 
@@ -2236,7 +2232,7 @@ Fora da primeira entrega v1:
 - External transform HTTP/gRPC.
 - Validation real.
 - Retry/backoff avancado.
-- DLQ/failure target customizado.
+- DLQ para targets diferentes de SQS.
 - Idempotencia.
 - Hot reload.
 - Metrics por step.
@@ -2247,7 +2243,7 @@ Itens que devem ficar em v1:
 | --- | --- |
 | Error model completo | Depende de source-specific completion |
 | Retry/backoff | Depende de pipeline runtime e completion |
-| DLQ/failure target | Depende de completion policy |
+| DLQ/failure target | SQS implementado; outros destinos dependem de plugins de target |
 | Idempotencia | Depende de `PipelineMessage` e retry |
 | Secret references | Necessario para HTTP/external processors |
 | Ordering/concurrency | Depende de channels e workers |
@@ -2289,12 +2285,10 @@ source:
     onFailure:
       action: deadLetter
       deadLetter:
-        type: sqs
         queue: postio-dlq
     onValidationFailure:
       action: deadLetter
       deadLetter:
-        type: sqs
         queue: postio-invalid-dlq
 ```
 
@@ -2582,12 +2576,12 @@ Status da primeira fatia:
 
 - `[x]` `validate.engine: jsonschema` com `schema` inline.
 - `[x]` Fallback noop quando `validate` nao existe.
-- `[x]` HTTP source retorna `422` e `status: rejected` quando a validacao falha.
-- `[x]` SQS source nao deleta a mensagem quando a validacao falha.
+- `[x]` HTTP source retorna `422` e `status: rejected` quando a validacao falha, salvo override em `source.completion`.
+- `[x]` SQS source nao deleta a mensagem quando a validacao falha, salvo override em `source.completion`.
 - `[x]` Target nao e chamado quando a validacao falha.
+- `[x]` `source.completion.onValidationFailure` para HTTP e SQS.
 - `[ ]` `schemaRef`.
 - `[ ]` `validation.steps`.
-- `[ ]` `onValidationFailure`.
 - `[ ]` Engines `contentType`, `rhai`, `http` e `grpc`.
 
 ### Fase 11: Response Transform E Completion
@@ -2595,6 +2589,13 @@ Status da primeira fatia:
 - Permitir manipular resposta do target.
 - Decidir HTTP response ou SQS ack/retry.
 - Padronizar erros.
+
+Status:
+
+- `[x]` HTTP `source.completion` customiza status/body de sucesso, falha de target e falha de validacao.
+- `[x]` SQS `source.completion` suporta `ack`, `retry`, `drop` e `deadLetter`.
+- `[x]` `deadLetter` SQS envia para DLQ e so depois deleta a mensagem original.
+- `[ ]` `responseTransform` dedicado para manipular resposta do target antes do completion.
 
 ### Fase 12: Hardening
 

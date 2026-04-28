@@ -5,7 +5,11 @@ mod target;
 mod transform;
 mod validate;
 
-pub use source::{HttpSourceConfig, SourceConfig, SqsSourceConfig};
+pub use source::{
+    HttpCompletionResponseConfig, HttpCompletionRule, HttpSourceCompletionConfig, HttpSourceConfig,
+    SourceConfig, SqsCompletionAction, SqsCompletionRule, SqsDeadLetterConfig,
+    SqsSourceCompletionConfig, SqsSourceConfig,
+};
 pub use target::{HttpTargetConfig, SqsTargetConfig, TargetConfig};
 pub use transform::{TemplateTransformConfig, TransformConfig, TransformTemplateOutput};
 pub use validate::{JsonSchemaValidateConfig, ValidateConfig};

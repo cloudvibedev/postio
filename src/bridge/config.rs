@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::pipeline::{
-    config::{PipelineConfig, SourceConfig, TargetConfig},
+    config::{PipelineConfig, SourceConfig, SqsCompletionAction, TargetConfig},
     validation::PipelineValidator,
 };
 
@@ -137,6 +137,23 @@ fn validate_pipeline(pipeline: &PipelineConfig) -> Result<()> {
                     pipeline.id
                 ));
             }
+            if let Some(completion) = &config.completion {
+                validate_http_completion_rule(
+                    pipeline,
+                    completion.on_success.as_ref(),
+                    "onSuccess",
+                )?;
+                validate_http_completion_rule(
+                    pipeline,
+                    completion.on_failure.as_ref(),
+                    "onFailure",
+                )?;
+                validate_http_completion_rule(
+                    pipeline,
+                    completion.on_validation_failure.as_ref(),
+                    "onValidationFailure",
+                )?;
+            }
         }
         SourceConfig::Sqs(config) if config.queue.is_none() && config.queue_url.is_none() => {
             return Err(anyhow!(
@@ -144,7 +161,25 @@ fn validate_pipeline(pipeline: &PipelineConfig) -> Result<()> {
                 pipeline.id
             ));
         }
-        _ => {}
+        SourceConfig::Sqs(config) => {
+            if let Some(completion) = &config.completion {
+                validate_sqs_completion_rule(
+                    pipeline,
+                    completion.on_success.as_ref(),
+                    "onSuccess",
+                )?;
+                validate_sqs_completion_rule(
+                    pipeline,
+                    completion.on_failure.as_ref(),
+                    "onFailure",
+                )?;
+                validate_sqs_completion_rule(
+                    pipeline,
+                    completion.on_validation_failure.as_ref(),
+                    "onValidationFailure",
+                )?;
+            }
+        }
     }
 
     match &pipeline.target {
@@ -174,6 +209,55 @@ fn validate_pipeline(pipeline: &PipelineConfig) -> Result<()> {
     PipelineValidator::compile(pipeline.validate.clone())
         .with_context(|| format!("pipeline {} validate config is invalid", pipeline.id))?;
 
+    Ok(())
+}
+
+fn validate_sqs_completion_rule(
+    pipeline: &PipelineConfig,
+    rule: Option<&crate::pipeline::config::SqsCompletionRule>,
+    name: &str,
+) -> Result<()> {
+    let Some(rule) = rule else {
+        return Ok(());
+    };
+    if !matches!(rule.action, Some(SqsCompletionAction::DeadLetter)) {
+        return Ok(());
+    }
+    let Some(dead_letter) = &rule.dead_letter else {
+        return Err(anyhow!(
+            "pipeline {} sqs source completion {} deadLetter action requires deadLetter config",
+            pipeline.id,
+            name
+        ));
+    };
+    if dead_letter.queue.is_none() && dead_letter.queue_url.is_none() {
+        return Err(anyhow!(
+            "pipeline {} sqs source completion {} deadLetter requires queue or queueUrl",
+            pipeline.id,
+            name
+        ));
+    }
+    Ok(())
+}
+
+fn validate_http_completion_rule(
+    pipeline: &PipelineConfig,
+    rule: Option<&crate::pipeline::config::HttpCompletionRule>,
+    name: &str,
+) -> Result<()> {
+    let Some(status) = rule
+        .and_then(|rule| rule.response.as_ref())
+        .and_then(|response| response.status)
+    else {
+        return Ok(());
+    };
+    if !(100..=599).contains(&status) {
+        return Err(anyhow!(
+            "pipeline {} http source completion {} response status must be between 100 and 599",
+            pipeline.id,
+            name
+        ));
+    }
     Ok(())
 }
 
@@ -311,6 +395,77 @@ pipeline:
         );
         assert_eq!(config.output.delay_seconds, Some(2));
         assert!(config.output.body.expect("body").is_object());
+    }
+
+    #[test]
+    fn parses_pipeline_source_completion() {
+        let config: BridgeConfig = serde_yaml::from_str(
+            r#"
+pipeline:
+  id: sqs-to-http
+  source:
+    type: sqs
+    queue: orders-input
+    completion:
+      onFailure:
+        action: deadLetter
+        deadLetter:
+          queue: orders-dlq
+  target:
+    type: http
+    url: https://api.example.com/orders
+"#,
+        )
+        .expect("config parses");
+
+        let config = validate_config(config).expect("config is valid");
+        let pipeline = config.pipeline.expect("pipeline");
+        let SourceConfig::Sqs(source) = pipeline.source else {
+            panic!("expected sqs source");
+        };
+        let completion = source.completion.expect("completion");
+        let on_failure = completion.on_failure.expect("on failure");
+        assert!(matches!(
+            on_failure.action,
+            Some(crate::pipeline::config::SqsCompletionAction::DeadLetter)
+        ));
+        assert_eq!(
+            on_failure
+                .dead_letter
+                .expect("dead letter")
+                .queue
+                .as_deref(),
+            Some("orders-dlq")
+        );
+    }
+
+    #[test]
+    fn rejects_dead_letter_completion_without_destination() {
+        let config: BridgeConfig = serde_yaml::from_str(
+            r#"
+pipeline:
+  id: sqs-to-http
+  source:
+    type: sqs
+    queue: orders-input
+    completion:
+      onFailure:
+        action: deadLetter
+        deadLetter: {}
+  target:
+    type: http
+    url: https://api.example.com/orders
+"#,
+        )
+        .expect("config parses");
+
+        let error = validate_config(config).expect_err("invalid dead letter is rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("deadLetter requires queue or queueUrl"),
+            "{error}"
+        );
     }
 
     #[test]

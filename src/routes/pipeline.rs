@@ -81,15 +81,26 @@ async fn handle_pipeline_http(
             ))
             .await?;
         let status = http_status_for_response(&response);
+        let body = response
+            .http_body
+            .clone()
+            .unwrap_or_else(|| serde_json::to_value(&response).expect("completion serializes"));
         tracing::Span::current().record("response.status_code", status.as_u16());
         tracing::Span::current().record("pipeline.status", response.status.as_str());
-        Ok((status, Json(response)))
+        Ok((status, Json(body)))
     }
     .instrument(span)
     .await
 }
 
 fn http_status_for_response(response: &CompletionResponse) -> StatusCode {
+    if let Some(status) = response
+        .http_status_code
+        .and_then(|status| StatusCode::from_u16(status).ok())
+    {
+        return status;
+    }
+
     if response.status == "rejected" {
         return StatusCode::UNPROCESSABLE_ENTITY;
     }

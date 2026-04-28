@@ -83,11 +83,12 @@ source -> decode -> validate(noop/jsonschema) -> transform(noop/template) -> tar
 Escopo implementado nesta versao:
 
 - Source `http`: registra uma rota `POST` e envia o payload para a pipeline.
-- Source `sqs`: faz polling da fila, envia cada mensagem para a pipeline e remove a mensagem apos sucesso no target.
+- Source `sqs`: faz polling da fila, envia cada mensagem para a pipeline e finaliza conforme `source.completion`.
 - Target `http`: envia o payload para um endpoint externo.
 - Target `sqs`: envia o payload para uma fila SQS.
 - Validate: retorna valido quando ausente; quando configurado com `engine: jsonschema`, valida o payload antes do transform e bloqueia o target em caso de rejeicao.
 - Transform: retorna o payload original quando ausente; quando configurado com `engine: template`, pode montar body, headers, query, atributos e outros overrides de saida.
+- Completion: pode ser configurado em `source.completion`. HTTP customiza status/body da resposta; SQS decide `ack`, `retry`, `drop` ou `deadLetter`.
 
 ### Schema raiz
 
@@ -99,6 +100,10 @@ pipeline:
     type: http
     method: POST
     path: /orders
+    completion:
+      onFailure:
+        response:
+          status: 502
   validate:
     engine: jsonschema
     schema:
@@ -124,11 +129,12 @@ pipeline:
 | `id` | sim | - | Identificador da pipeline. Aparece em logs, spans e respostas. |
 | `enabled` | nao | `true` | Liga ou desliga a pipeline. |
 | `source` | sim | - | Entrada da pipeline. Nesta fase pode ser `http` ou `sqs`. |
+| `source.completion` | nao | politica default | Politica de finalizacao do source. |
 | `validate` | nao | noop | Validacao opcional antes do transform. Nesta fase suporta `engine: jsonschema` com schema inline. |
 | `transform` | nao | noop | Transformacao opcional antes do target. Nesta fase suporta `engine: template`. |
 | `target` | sim | - | Saida da pipeline. Nesta fase pode ser `http` ou `sqs`. |
 
-`source.completion` ainda nao e um campo configuravel no runtime atual. A politica existe de forma implicita por source e o schema planejado esta documentado em cada resource.
+`source.completion` e opcional. Quando ausente, a politica default continua ativa por source.
 
 ## Resources
 
@@ -138,9 +144,9 @@ Cada resource documenta os papeis que suporta dentro da pipeline:
 - `target`: como a pipeline envia dados para fora.
 - `source.completion`: como a pipeline finaliza a conversa com o source original.
 
-O completion pertence ao `source`, porque e ele que decide como responder, confirmar ou liberar retry para a origem. Ja o retry de envio pertence ao `target`, como `target.retry`, porque controla tentativas de entrega para o destino. Hoje o completion e operacional e implicito. O schema generico documentado abaixo e o modelo planejado para tornar essa etapa configuravel.
+O completion pertence ao `source`, porque e ele que decide como responder, confirmar ou liberar retry para a origem. Ja o retry de envio pertence ao `target`, como `target.retry`, porque controla tentativas de entrega para o destino.
 
-No codigo, os schemas de pipeline ficam em `src/pipeline/config/`, separados por familia: `source.rs`, `target.rs`, `transform.rs` e `validate.rs`. As structs continuam separadas por resource e papel, como `HttpSourceConfig`, `HttpTargetConfig`, `SqsSourceConfig`, `SqsTargetConfig`, `TemplateTransformConfig` e `ValidateConfig`.
+No codigo, os schemas de pipeline ficam em `src/pipeline/config/`, separados por familia: `source.rs`, `target.rs`, `transform.rs` e `validate.rs`. As structs continuam separadas por resource e papel, como `HttpSourceConfig`, `HttpSourceCompletionConfig`, `HttpTargetConfig`, `SqsSourceConfig`, `SqsSourceCompletionConfig`, `SqsDeadLetterConfig`, `SqsTargetConfig`, `TemplateTransformConfig` e `ValidateConfig`.
 
 ### HTTP
 
@@ -165,10 +171,11 @@ pipeline:
 | `type` | sim | - | Deve ser `http`. |
 | `method` | nao | `POST` | Metodo aceito. Nesta fase apenas `POST` e registrado. |
 | `path` | sim | - | Rota HTTP da pipeline. Deve iniciar com `/` e pode usar params como `{tenant}`. |
+| `completion` | nao | politica default | Politica de resposta HTTP do source. |
 
 #### HTTP Completion
 
-Completion atual para HTTP source:
+Completion default para HTTP source:
 
 | Situacao | Acao atual | Resposta HTTP |
 | --- | --- | --- |
@@ -176,7 +183,7 @@ Completion atual para HTTP source:
 | Target SQS com sucesso | Responde ao cliente com `CompletionResponse`. | `202 Accepted`. |
 | Target falha | Responde ao cliente com `CompletionResponse` de erro. | `502 Bad Gateway`. |
 
-Schema planejado:
+Schema:
 
 ```yaml
 source:
@@ -190,13 +197,13 @@ source:
         body:
           ok: true
           requestId: "{{ context.requestId }}"
-          target: "{{ target }}"
+          messageId: "{{ context.messageId }}"
     onFailure:
       response:
         status: 502
         body:
           ok: false
-          error: "{{ error.message }}"
+          error: "{{ context.error }}"
     onValidationFailure:
       response:
         status: 422
@@ -207,12 +214,14 @@ source:
 
 | Propriedade | Obrigatoria | Padrao | Descricao |
 | --- | --- | --- | --- |
-| `onSuccess.response.status` | nao | status do target ou `202` | Status HTTP planejado para resposta customizada. |
-| `onSuccess.response.body` | nao | `CompletionResponse` | Body planejado para resposta customizada. |
-| `onFailure.response.status` | nao | `502` | Status HTTP planejado para resposta de falha. |
-| `onFailure.response.body` | nao | `CompletionResponse` de erro | Body planejado para resposta customizada de falha. |
-| `onValidationFailure.response.status` | nao | `422` | Status HTTP planejado quando a validacao rejeitar o payload. |
-| `onValidationFailure.response.body` | nao | `CompletionResponse` de rejeicao | Body planejado para resposta customizada de validacao. |
+| `onSuccess.response.status` | nao | status do target ou `202` | Status HTTP para resposta customizada. |
+| `onSuccess.response.body` | nao | `CompletionResponse` | Body para resposta customizada. |
+| `onFailure.response.status` | nao | `502` | Status HTTP para resposta de falha. |
+| `onFailure.response.body` | nao | `CompletionResponse` de erro | Body para resposta customizada de falha. |
+| `onValidationFailure.response.status` | nao | `422` | Status HTTP quando a validacao rejeitar o payload. |
+| `onValidationFailure.response.body` | nao | `CompletionResponse` de rejeicao | Body para resposta customizada de validacao. |
+
+Templates de `response.body` podem usar `params`, `query`, `headers`, `body` e `context`. O `context` inclui `requestId`, `pipelineId`, `sourceType`, `status`, `targetType`, `targetStatusCode`, `messageId` e `error` quando estes valores existirem.
 
 #### HTTP Target
 
@@ -274,17 +283,18 @@ pipeline:
 | `batchSize` | nao | `1` | Quantidade maxima de mensagens por polling. |
 | `waitTimeSeconds` | nao | `10` | Long polling em segundos. |
 | `visibilityTimeoutSeconds` | nao | AWS default | Visibility timeout aplicado ao receive. |
+| `completion` | nao | politica default | Politica de ack, retry, drop ou DLQ do source. |
 
 #### SQS Completion
 
-Completion atual para SQS source:
+Completion default para SQS source:
 
 | Situacao | Acao atual | Efeito no SQS |
 | --- | --- | --- |
 | Target com sucesso | `ack` | Executa `DeleteMessage` na mensagem original. |
 | Target falha | `retry` | Nao deleta a mensagem; ela volta apos o visibility timeout. |
 
-Schema planejado:
+Schema:
 
 ```yaml
 source:
@@ -298,7 +308,6 @@ source:
     onValidationFailure:
       action: deadLetter
       deadLetter:
-        type: sqs
         queue: orders-invalid-dlq
 ```
 
@@ -306,10 +315,15 @@ source:
 | --- | --- | --- | --- |
 | `onSuccess.action` | nao | `ack` | Acao quando o target conclui com sucesso. Para SQS, `ack` significa deletar a mensagem original. |
 | `onFailure.action` | nao | `retry` | Acao quando o target falha. Para SQS, `retry` significa nao deletar a mensagem. |
-| `onValidationFailure.action` | nao | `retry` | Acao quando a validacao rejeita a mensagem. Pode evoluir para `deadLetter` ou `drop`. |
-| `deadLetter.type` | condicional | - | Tipo de DLQ planejado. Na primeira implementacao, `sqs`. |
-| `deadLetter.queue` | condicional | - | Fila SQS que recebe mensagens rejeitadas ou falhadas. |
-| `action=drop` | nao | - | Planejado para descartar a mensagem, deletando-a mesmo quando a pipeline rejeitar ou falhar. |
+| `onValidationFailure.action` | nao | `retry` | Acao quando a validacao rejeita a mensagem. |
+| `action` | nao | depende da situacao | Valores suportados: `ack`, `retry`, `drop` e `deadLetter`. |
+| `deadLetter.queue` | condicional | - | Nome da fila SQS de DLQ. Obrigatorio quando `deadLetter.queueUrl` nao existe. |
+| `deadLetter.queueUrl` | condicional | - | URL completa da fila SQS de DLQ. Se informada, e usada diretamente. |
+| `deadLetter.delaySeconds` | nao | AWS default | Delay aplicado ao envio para DLQ. |
+| `deadLetter.attributes` | nao | - | Atributos SQS enviados junto com a mensagem de DLQ. |
+| `action=drop` | nao | - | Descarta a mensagem, deletando-a mesmo quando a pipeline rejeitar ou falhar. |
+
+Quando `action: deadLetter` e usado, o Postio envia o payload atual para a fila de DLQ e so depois executa `DeleteMessage` na mensagem original. Se o envio para DLQ falhar, a mensagem original nao e deletada.
 
 #### SQS Target
 

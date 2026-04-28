@@ -153,6 +153,10 @@ pub struct CompletionResponse {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<Vec<ValidationErrorDetail>>,
+    #[serde(skip)]
+    pub http_status_code: Option<u16>,
+    #[serde(skip)]
+    pub http_body: Option<Value>,
 }
 
 impl Payload {

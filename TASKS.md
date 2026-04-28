@@ -126,7 +126,7 @@ Notas da primeira entrega:
 - `[x]` Reorganizar README com secao `Resources`.
 - `[x]` Documentar resource `HTTP` por papeis: `source`, `target` e `completion`.
 - `[x]` Documentar resource `SQS` por papeis: `source`, `target` e `completion`.
-- `[x]` Explicitar que completion atual e implicito por source e que o schema generico ainda e planejado.
+- `[x]` Explicitar que completion inicialmente era implicito por source e que depois evoluiu para `source.completion`.
 - `[x]` Refatorar o schema de pipeline no codigo para structs individuais por resource/papel: `HttpSourceConfig`, `HttpTargetConfig`, `SqsSourceConfig`, `SqsTargetConfig` e `TemplateTransformConfig`.
 - `[x]` Manter compatibilidade do YAML/JSON existente apos a refatoracao dos schemas.
 - `[x]` Organizar os schemas de pipeline em `src/pipeline/config/`, separando `source.rs`, `target.rs` e `transform.rs`.
@@ -188,26 +188,28 @@ Notas:
 - `[x]` Decidir que completion pertence ao source como `source.completion`.
 - `[x]` Decidir que DLQ/deadLetter pertence ao `source.completion`, pois finaliza a mensagem original.
 - `[x]` Atualizar `PLAN-PIPELINES.md` com ownership de `source.completion`, `target.retry` e `deadLetter`.
-- `[x]` Atualizar README com exemplos planejados por resource.
+- `[x]` Atualizar README com exemplos por resource.
+- `[x]` Definir structs de config para `source.completion` de HTTP source.
+- `[x]` Definir structs de config para `source.completion` de SQS source.
+- `[x]` Implementar `source.completion` configuravel para HTTP.
+- `[x]` Implementar `source.completion` configuravel para SQS.
+- `[x]` Implementar `deadLetter` SQS para falha de target e falha de validacao.
+- `[x]` Criar testes de completion HTTP configuravel.
+- `[x]` Criar testes de completion SQS configuravel.
+- `[x]` Criar testes de DLQ/deadLetter.
 - `[ ]` Definir structs de config para `target.retry`, com `maxAttempts` e `backoff`.
-- `[ ]` Definir structs de config para `source.completion` de HTTP source.
-- `[ ]` Definir structs de config para `source.completion` de SQS source.
 - `[ ]` Implementar retry de target HTTP.
 - `[ ]` Implementar retry de target SQS.
-- `[ ]` Implementar `source.completion` configuravel para HTTP.
-- `[ ]` Implementar `source.completion` configuravel para SQS.
-- `[ ]` Implementar `deadLetter` SQS para falha de target e falha de validacao.
 - `[ ]` Criar testes de retry de target.
-- `[ ]` Criar testes de completion HTTP configuravel.
-- `[ ]` Criar testes de completion SQS configuravel.
-- `[ ]` Criar testes de DLQ/deadLetter.
 
 Notas:
 
 - Primeira implementacao deve preferir backoff `fixed`, mantendo `exponential` planejado para uma etapa seguinte.
 - `target.retry` controla apenas tentativas de entrega para o destino.
 - `source.completion` controla resposta, ack, retry, drop ou deadLetter do source original.
-- Primeira implementacao de `deadLetter` deve focar em SQS.
+- Primeira implementacao de `deadLetter` foi feita com SQS.
+- HTTP completion suporta override de status/body em `onSuccess`, `onFailure` e `onValidationFailure`.
+- SQS completion envia para DLQ antes de deletar a mensagem original; se a DLQ falhar, a original nao e deletada.
 
 ### Transformacao Avancada
 
