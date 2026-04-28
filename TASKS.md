@@ -20,11 +20,12 @@ Este arquivo acompanha as proximas tarefas praticas do Postio. Sempre revisar ju
 
 - Data: 2026-04-28.
 - Deploy validado no cluster EKS `eks-autob-k8s`.
-- Imagem validada no pod: `ghcr.io/cloudvibedev/postio:39d532f4b0b3be67dc2076fe8dee137ef09f33fd`.
-- Commit validado pelo Argo CD em `k8s-sandbox`: `41224a0f02fc893e3cb1b94586749e85939c3278`.
+- Imagem mais recente publicada: `ghcr.io/cloudvibedev/postio:45d93635cbf7f8862ad8ba841c7d2925bc063b99`.
+- Commit mais recente validado pelo Argo CD em `k8s-sandbox`: `987c6df46d38fd8e5ab0c8cba77f39b15febc1d9`.
 - Endpoints testados:
   - `http://gateway.sdx.autob/postio/pipeline/sqs`.
   - `http://gateway.sdx.autob/postio/pipeline/error`.
+  - `http://gateway.sdx.autob/postio/pipeline/template/sqs/acme`.
 
 ## Validacao Do Deploy Atual
 
@@ -51,6 +52,7 @@ Este arquivo acompanha as proximas tarefas praticas do Postio. Sempre revisar ju
 - `POST /postio/sns` retornou `202 Accepted`; a subscription SNS -> SQS entregou o payload `v0-sns-1777340643` na fila `postio-sns-capture`.
 - `POST /postio/s3` retornou `201 Created` e o objeto salvo no bucket continha o payload `v0-s3-json-1777340667`.
 - `POST /postio/s3/multipart-test` retornou `201 Created` e o objeto salvo no bucket continha o arquivo `v0-s3-multipart-1777340682.txt`.
+- `POST /postio/pipeline/template/sqs/acme?source=checkout` retornou `202 Accepted` com `messageId=ced2bf5b-9ed6-4806-b4ae-63450007a847`.
 
 ## Observabilidade
 
@@ -124,16 +126,18 @@ Notas da primeira entrega:
 - `[x]` Criar teste `SQS -> SQS` validando atributos SQS dinamicos.
 - `[x]` Atualizar README com exemplo de `transform.output.attributes`.
 - `[x]` Atualizar `PLAN-PIPELINES.md` marcando `attributes` como suportado para SQS.
-- `[ ]` Publicar imagem com suporte a attributes e acompanhar GitHub Actions.
-- `[ ]` Atualizar sandbox para a nova imagem.
-- `[ ]` Validar `transform.output.attributes` no sandbox.
+- `[x]` Publicar imagem com suporte a attributes e acompanhar GitHub Actions.
+- `[x]` Atualizar sandbox para a nova imagem.
+- `[!]` Validar `transform.output.attributes` no sandbox.
 
 Notas:
 
-- A role IAM atual `postio-ingestion-api` nao permite `sqs:ReceiveMessage`, entao a validacao no sandbox precisa usar uma alternativa:
-  - ajustar permissao temporaria de leitura para validar atributos na fila; ou
-  - criar um mecanismo de inspecao dedicado para teste; ou
-  - validar localmente com mock e registrar o bloqueio de leitura no sandbox.
+- A policy ACK/IAM foi ajustada para permitir `sqs:ReceiveMessage` na fila `postio-sqs-input`.
+- A rota sandbox `POST /postio/pipeline/template/sqs/{tenant}` foi criada e retornou `202 Accepted` gravando no SQS.
+- A leitura direta dos atributos SQS no sandbox ficou bloqueada nesta rodada porque:
+  - o token SSO usado pelo `kubectl` expirou e nao renovou automaticamente; e
+  - em seguida os hostnames `gateway.sdx.autob` e `grafana.o11y.sdx.autob` pararam de resolver na sessao local.
+- Assim que o SSO/DNS da VPN estiver OK, validar a mensagem `ced2bf5b-9ed6-4806-b4ae-63450007a847` ou reenviar novo payload e ler com `message-attribute-names=All`.
 
 ### Rotas De Validacao Em Sandbox
 
@@ -172,4 +176,6 @@ Notas:
 - `[x]` Esta sessao local nao resolve `gateway.sdx.autob` sem DNS da Client VPN.
 - `[!]` Argo CD esta `Synced`, mas com health global `Degraded` por `RepeatedResourceWarning` do namespace `cloudvibe`; nao parece ser causado pelo Postio.
 - `[x]` O hostname direto do Tempo nao respondeu durante a validacao; os traces foram validados via proxy de datasource do Grafana.
-- `[!]` A role IAM `postio-ingestion-api` nao permite `sqs:ReceiveMessage`; validacoes de leitura direta da fila precisam de permissao separada ou outro mecanismo de teste.
+- `[x]` A role IAM `postio-ingestion-api` agora declara `sqs:ReceiveMessage` para a fila `postio-sqs-input`.
+- `[!]` O token SSO local do AWS/kubectl expirou durante a validacao de attributes.
+- `[!]` A resolucao DNS local para `gateway.sdx.autob` e `grafana.o11y.sdx.autob` falhou depois do teste `POST /postio/pipeline/template/sqs/acme`.
