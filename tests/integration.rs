@@ -498,6 +498,11 @@ async fn http_pipeline_template_transform_sends_payload_to_sqs_target() {
             },
             transform: Some(TransformConfig::Template {
                 output: TransformTemplateOutput {
+                    attributes: Some(BTreeMap::from([
+                        ("event".to_string(), "{{ body.event }}".into()),
+                        ("tenant".to_string(), "{{ params.tenant }}".into()),
+                        ("priority".to_string(), json!("{{ body.priority }}")),
+                    ])),
                     body: Some(json!({
                         "event": "{{ body.event }}",
                         "tenant": "{{ params.tenant }}",
@@ -529,7 +534,9 @@ async fn http_pipeline_template_transform_sends_payload_to_sqs_target() {
                 .method(Method::POST)
                 .uri("/pipe/acme?source=test")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"event":"order.created","total":42}"#))
+                .body(Body::from(
+                    r#"{"event":"order.created","priority":3,"total":42}"#,
+                ))
                 .expect("build request"),
         )
         .await
@@ -546,6 +553,9 @@ async fn http_pipeline_template_transform_sends_payload_to_sqs_target() {
     assert_eq!(transformed["tenant"], "acme");
     assert_eq!(transformed["source"], "test");
     assert_eq!(transformed["original"]["total"], 42);
+    assert_eq!(sent[0].attributes["event"], "order.created");
+    assert_eq!(sent[0].attributes["tenant"], "acme");
+    assert_eq!(sent[0].attributes["priority"], "3");
     assert!(transformed["requestId"]
         .as_str()
         .is_some_and(|value| !value.is_empty()));
@@ -874,6 +884,83 @@ async fn sqs_pipeline_sends_payload_to_sqs_target_and_deletes_source_message() {
     .await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sqs_pipeline_template_transform_sends_attributes_to_sqs_target() {
+    let sqs = MockSqs::spawn(vec![MockSqsMessage {
+        message_id: "source-message-1".to_string(),
+        receipt_handle: "receipt-1".to_string(),
+        body: r#"{"event":"order.relayed","tenant":"acme","priority":2}"#.to_string(),
+    }])
+    .await;
+    let bridge_config = BridgeConfig {
+        routes: Vec::new(),
+        pipeline: Some(PipelineConfig {
+            id: "sqs-to-sqs-template".to_string(),
+            enabled: true,
+            source: SourceConfig::Sqs {
+                queue: None,
+                queue_url: Some(sqs.queue_url("input")),
+                batch_size: 1,
+                wait_time_seconds: 0,
+                visibility_timeout_seconds: None,
+            },
+            transform: Some(TransformConfig::Template {
+                output: TransformTemplateOutput {
+                    attributes: Some(BTreeMap::from([
+                        ("event".to_string(), "{{ body.event }}".into()),
+                        ("tenant".to_string(), "{{ body.tenant }}".into()),
+                        ("priority".to_string(), json!("{{ body.priority }}")),
+                    ])),
+                    body: Some(json!({
+                        "event": "{{ body.event }}",
+                        "tenant": "{{ body.tenant }}",
+                        "sourceType": "{{ context.sourceType }}",
+                        "original": "{{ body }}"
+                    })),
+                    ..TransformTemplateOutput::default()
+                },
+            }),
+            target: TargetConfig::Sqs {
+                queue: None,
+                queue_url: Some(sqs.queue_url("output")),
+                delay_seconds: None,
+            },
+        }),
+    };
+
+    let _router = setup_router_with_sqs_client(
+        bridge_config,
+        Arc::new(NoopDispatcher),
+        test_sqs_client_for(sqs.endpoint_url()),
+    )
+    .await;
+
+    wait_until(Duration::from_secs(3), || {
+        let sqs = sqs.clone();
+        async move { !sqs.sent_messages().await.is_empty() }
+    })
+    .await;
+    let sent = sqs.sent_messages().await;
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].queue_url, sqs.queue_url("output"));
+    let transformed: Value = serde_json::from_str(&sent[0].body).expect("sqs body should be json");
+    assert_eq!(transformed["event"], "order.relayed");
+    assert_eq!(transformed["tenant"], "acme");
+    assert_eq!(transformed["sourceType"], "sqs");
+    assert_eq!(sent[0].attributes["event"], "order.relayed");
+    assert_eq!(sent[0].attributes["tenant"], "acme");
+    assert_eq!(sent[0].attributes["priority"], "2");
+    wait_until(Duration::from_secs(3), || {
+        let sqs = sqs.clone();
+        async move {
+            sqs.deleted_receipts()
+                .await
+                .contains(&"receipt-1".to_string())
+        }
+    })
+    .await;
+}
+
 async fn spawn_http_target(captured: Arc<tokio::sync::Mutex<Vec<String>>>) -> SocketAddr {
     let target_app = Router::new()
         .route("/target", post(capture_pipeline_target))
@@ -965,6 +1052,7 @@ struct MockSqsSend {
     queue_url: String,
     body: String,
     delay_seconds: Option<i64>,
+    attributes: BTreeMap<String, String>,
 }
 
 impl MockSqs {
@@ -1026,6 +1114,7 @@ async fn handle_mock_sqs(
                 queue_url: body["QueueUrl"].as_str().unwrap_or_default().to_string(),
                 body: body["MessageBody"].as_str().unwrap_or_default().to_string(),
                 delay_seconds: body["DelaySeconds"].as_i64(),
+                attributes: sqs_message_attributes_from_request(&body),
             });
             Json(serde_json::json!({
                 "MD5OfMessageBody": "mock-md5",
@@ -1059,6 +1148,19 @@ async fn handle_mock_sqs(
         }
         _ => Json(serde_json::json!({})),
     }
+}
+
+fn sqs_message_attributes_from_request(body: &Value) -> BTreeMap<String, String> {
+    body["MessageAttributes"]
+        .as_object()
+        .into_iter()
+        .flat_map(|attributes| attributes.iter())
+        .filter_map(|(key, value)| {
+            value["StringValue"]
+                .as_str()
+                .map(|value| (key.clone(), value.to_string()))
+        })
+        .collect()
 }
 
 async fn wait_until<F, Fut>(timeout: Duration, mut condition: F)

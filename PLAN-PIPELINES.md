@@ -2474,6 +2474,7 @@ pipeline:
 - Acessar `params`, `query`, `headers`, `attributes`, `body`, `form`, `file`, `context`.
 - Garantir merge entre `target` default e `transform.output`.
 - `transform.output.query` monta query string dinamica para targets HTTP.
+- `transform.output.attributes` monta atributos dinamicos para targets SQS.
 
 Exemplo:
 

@@ -14,3 +14,4 @@
 - Commit changes with clear messages reflecting the modifications made.
 - Write tests for new features or bug fixes to ensure code quality.
 - Update documentation in README.md to reflect new features or changes.
+- Always update TASKS.md when work changes implementation status, validation evidence, blockers, decisions, or next-step priority.

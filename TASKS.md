@@ -112,9 +112,52 @@ Evidencia do caminho de erro:
 
 Notas da primeira entrega:
 
-- `transform.output.body`, `headers`, `method`, `url`, `query` e `delaySeconds` ja sao aplicados no runtime.
-- `transform.output.attributes` ja faz parte do schema, mas ainda esta reservado para implementacao de atributos SQS.
+- `transform.output.body`, `headers`, `method`, `url`, `query`, `attributes` e `delaySeconds` ja sao aplicados no runtime.
 - Exemplo `SQS -> HTTP` com `transform.engine: template` documentado no README e no plano.
+
+## Proximos Passos
+
+### Fechar Transform Template
+
+- `[x]` Implementar `transform.output.attributes` para target SQS.
+- `[x]` Criar teste `HTTP -> SQS` validando atributos SQS dinamicos.
+- `[x]` Criar teste `SQS -> SQS` validando atributos SQS dinamicos.
+- `[x]` Atualizar README com exemplo de `transform.output.attributes`.
+- `[x]` Atualizar `PLAN-PIPELINES.md` marcando `attributes` como suportado para SQS.
+- `[ ]` Publicar imagem com suporte a attributes e acompanhar GitHub Actions.
+- `[ ]` Atualizar sandbox para a nova imagem.
+- `[ ]` Validar `transform.output.attributes` no sandbox.
+
+Notas:
+
+- A role IAM atual `postio-ingestion-api` nao permite `sqs:ReceiveMessage`, entao a validacao no sandbox precisa usar uma alternativa:
+  - ajustar permissao temporaria de leitura para validar atributos na fila; ou
+  - criar um mecanismo de inspecao dedicado para teste; ou
+  - validar localmente com mock e registrar o bloqueio de leitura no sandbox.
+
+### Rotas De Validacao Em Sandbox
+
+- `[ ]` Decidir se a rota `POST /postio/pipeline/error` deve permanecer como rota operacional de teste.
+- `[ ]` Se permanecer, documentar que ela e sandbox-only e existe para validar traces de falha.
+- `[ ]` Se for removida, remover manifests do `k8s-sandbox` e validar que os demais testes continuam passando.
+- `[ ]` Decidir se a rota `POST /postio/pipeline/template/http/{tenant}` deve permanecer como rota operacional de teste para transform template.
+- `[ ]` Se permanecer, documentar que ela e sandbox-only e existe para validar `body`, `headers` e `query`.
+
+### Proxima Capacidade Estrutural
+
+- `[ ]` Definir schema inicial de `validate.engine: jsonschema`.
+- `[ ]` Implementar etapa `validate` real mantendo fallback noop quando `validate` nao existir.
+- `[ ]` Criar teste de payload valido seguindo para o target.
+- `[ ]` Criar teste de payload invalido bloqueando o target.
+- `[ ]` Garantir span `postio.pipeline.validate` com `result.status=accepted` ou `result.status=rejected`.
+- `[ ]` Documentar exemplos simples de validacao no README.
+
+### Transformacao Avancada
+
+- `[ ]` Revisar no plano o escopo minimo do `transform.engine: rhai`.
+- `[ ]` Definir contrato de entrada e saida do Rhai antes de implementar.
+- `[ ]` Definir limites de seguranca do Rhai: timeout, funcoes permitidas e acesso a contexto.
+- `[ ]` Implementar Rhai somente depois de fechar `template` e `jsonschema`.
 
 ## Rotas Temporarias De Validacao
 

@@ -229,6 +229,10 @@ pipeline:
         source: "{{ query.source }}"
         requestId: "{{ context.requestId }}"
         original: "{{ body }}"
+      attributes:
+        event: order.received
+        tenant: "{{ params.tenant }}"
+        source: "{{ query.source }}"
   target:
     type: sqs
     queue: orders-output
@@ -251,7 +255,7 @@ Campos de `transform.output`:
 | `url` | nao | sim para target HTTP | URL dinamica do target HTTP. |
 | `delaySeconds` | nao | sim para target SQS | Delay dinamico usado no envio SQS. |
 | `query` | nao | sim para target HTTP | Query string dinamica enviada ao target HTTP. |
-| `attributes` | nao | reservado | Planejado para atributos SQS. |
+| `attributes` | nao | sim para target SQS | Atributos dinamicos enviados ao SQS como `String`. |
 
 Contexto disponivel no template:
 
@@ -295,6 +299,30 @@ pipeline:
     type: http
     method: POST
     url: https://example.com/events
+```
+
+Exemplo com target SQS e atributos dinamicos:
+
+```yaml
+pipeline:
+  id: http-to-sqs-template
+  source:
+    type: http
+    path: /orders/{tenant}
+  transform:
+    engine: template
+    output:
+      body:
+        event: "{{ body.event }}"
+        tenant: "{{ params.tenant }}"
+        original: "{{ body }}"
+      attributes:
+        event: "{{ body.event }}"
+        tenant: "{{ params.tenant }}"
+        priority: "{{ body.priority }}"
+  target:
+    type: sqs
+    queue: orders-output
 ```
 
 Exemplo lendo SQS e enviando para HTTP:

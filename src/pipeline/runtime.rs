@@ -1,6 +1,11 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{anyhow, Context, Result};
+use aws_sdk_sqs::types::MessageAttributeValue as SqsAttribute;
 use axum::http::HeaderMap;
 use bytes::Bytes;
 use tokio::sync::{mpsc, oneshot};
@@ -230,7 +235,13 @@ fn apply_transform(transform: &TransformConfig, message: &mut PipelineMessage) {
             if let Some(query) = &output.query {
                 message.target.query = query
                     .iter()
-                    .map(|(key, value)| (key.clone(), render_query_value(value, &ctx)))
+                    .map(|(key, value)| (key.clone(), render_template_string(value, &ctx)))
+                    .collect();
+            }
+            if let Some(attributes) = &output.attributes {
+                message.target.attributes = attributes
+                    .iter()
+                    .map(|(key, value)| (key.clone(), render_template_string(value, &ctx)))
                     .collect();
             }
             if let Some(delay_seconds) = output.delay_seconds {
@@ -240,7 +251,7 @@ fn apply_transform(transform: &TransformConfig, message: &mut PipelineMessage) {
     }
 }
 
-fn render_query_value(value: &serde_json::Value, ctx: &TemplateContext) -> String {
+fn render_template_string(value: &serde_json::Value, ctx: &TemplateContext) -> String {
     match render_value(value, ctx) {
         serde_json::Value::Null => String::new(),
         serde_json::Value::String(value) => value,
@@ -449,6 +460,7 @@ async fn send_to_target(
                 .send_message()
                 .queue_url(queue_url)
                 .message_body(message.payload.to_string_body())
+                .set_message_attributes(sqs_message_attributes(&message.target.attributes))
                 .set_delay_seconds(delay_seconds)
                 .send()
                 .await
@@ -461,6 +473,30 @@ async fn send_to_target(
             })
         }
     }
+}
+
+fn sqs_message_attributes(
+    attributes: &BTreeMap<String, String>,
+) -> Option<HashMap<String, SqsAttribute>> {
+    if attributes.is_empty() {
+        return None;
+    }
+
+    Some(
+        attributes
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key.clone(),
+                    SqsAttribute::builder()
+                        .data_type("String")
+                        .string_value(value)
+                        .build()
+                        .expect("valid sqs string attribute"),
+                )
+            })
+            .collect(),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
