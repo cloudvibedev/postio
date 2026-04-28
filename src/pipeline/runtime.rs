@@ -110,14 +110,7 @@ impl PipelineRuntime {
     }
 
     fn spawn_source_if_needed(&self) {
-        let SourceConfig::Sqs {
-            queue,
-            queue_url,
-            batch_size,
-            wait_time_seconds,
-            visibility_timeout_seconds,
-        } = self.config.source.clone()
-        else {
+        let SourceConfig::Sqs(source) = self.config.source.clone() else {
             return;
         };
 
@@ -129,11 +122,11 @@ impl PipelineRuntime {
                 pipeline_id,
                 resources,
                 input_tx,
-                queue,
-                queue_url,
-                batch_size,
-                wait_time_seconds,
-                visibility_timeout_seconds,
+                source.queue,
+                source.queue_url,
+                source.batch_size,
+                source.wait_time_seconds,
+                source.visibility_timeout_seconds,
             )
             .await;
         });
@@ -190,7 +183,7 @@ async fn run_transform_worker(
     transform: Option<TransformConfig>,
 ) {
     let engine = match transform.as_ref() {
-        Some(TransformConfig::Template { .. }) => "template",
+        Some(TransformConfig::Template(_)) => "template",
         None => "noop",
     };
     while let Some(mut message) = rx.recv().await {
@@ -215,36 +208,36 @@ async fn run_transform_worker(
 
 fn apply_transform(transform: &TransformConfig, message: &mut PipelineMessage) {
     match transform {
-        TransformConfig::Template { output } => {
+        TransformConfig::Template(config) => {
             let ctx = template_context(message);
-            if let Some(body) = &output.body {
+            if let Some(body) = &config.output.body {
                 message.payload = Payload::from_template_value(render_value(body, &ctx));
             }
-            if let Some(method) = &output.method {
+            if let Some(method) = &config.output.method {
                 message.target.method = Some(render_to_string(method, &ctx));
             }
-            if let Some(url) = &output.url {
+            if let Some(url) = &config.output.url {
                 message.target.url = Some(render_to_string(url, &ctx));
             }
-            if let Some(headers) = &output.headers {
+            if let Some(headers) = &config.output.headers {
                 message.target.headers = headers
                     .iter()
                     .map(|(key, value)| (key.clone(), render_to_string(value, &ctx)))
                     .collect();
             }
-            if let Some(query) = &output.query {
+            if let Some(query) = &config.output.query {
                 message.target.query = query
                     .iter()
                     .map(|(key, value)| (key.clone(), render_template_string(value, &ctx)))
                     .collect();
             }
-            if let Some(attributes) = &output.attributes {
+            if let Some(attributes) = &config.output.attributes {
                 message.target.attributes = attributes
                     .iter()
                     .map(|(key, value)| (key.clone(), render_template_string(value, &ctx)))
                     .collect();
             }
-            if let Some(delay_seconds) = output.delay_seconds {
+            if let Some(delay_seconds) = config.output.delay_seconds {
                 message.target.delay_seconds = Some(delay_seconds);
             }
         }
@@ -396,24 +389,19 @@ async fn send_to_target(
     message: &PipelineMessage,
 ) -> Result<TargetResponse> {
     match target {
-        TargetConfig::Http {
-            method,
-            url,
-            headers,
-            timeout_ms,
-        } => {
-            let method = message.target.method.as_ref().unwrap_or(method);
-            let url = message.target.url.as_ref().unwrap_or(url);
+        TargetConfig::Http(config) => {
+            let method = message.target.method.as_ref().unwrap_or(&config.method);
+            let url = message.target.url.as_ref().unwrap_or(&config.url);
             let method = reqwest::Method::from_bytes(method.as_bytes())
                 .with_context(|| format!("invalid http target method {method}"))?;
             let mut request = resources
                 .http
                 .request(method, url)
                 .body(message.payload.to_bytes());
-            if let Some(timeout_ms) = timeout_ms {
-                request = request.timeout(Duration::from_millis(*timeout_ms));
+            if let Some(timeout_ms) = config.timeout_ms {
+                request = request.timeout(Duration::from_millis(timeout_ms));
             }
-            if let Some(headers) = headers {
+            if let Some(headers) = &config.headers {
                 for (key, value) in headers {
                     request = request.header(key, value);
                 }
@@ -425,7 +413,8 @@ async fn send_to_target(
                 request = request.query(&message.target.query);
             }
             if let Some(content_type) = &message.metadata.content_type {
-                let has_content_type = headers
+                let has_content_type = config
+                    .headers
                     .as_ref()
                     .is_some_and(|headers| contains_header(headers, "content-type"))
                     || contains_header(&message.target.headers, "content-type");
@@ -446,14 +435,10 @@ async fn send_to_target(
                 message_id: None,
             })
         }
-        TargetConfig::Sqs {
-            queue,
-            queue_url,
-            delay_seconds,
-        } => {
-            let delay_seconds = message.target.delay_seconds.or(*delay_seconds);
+        TargetConfig::Sqs(config) => {
+            let delay_seconds = message.target.delay_seconds.or(config.delay_seconds);
             let queue_url = resources
-                .resolve_queue_url(queue.as_deref(), queue_url.as_deref())
+                .resolve_queue_url(config.queue.as_deref(), config.queue_url.as_deref())
                 .await?;
             let response = resources
                 .sqs

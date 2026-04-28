@@ -130,6 +130,8 @@ Cada resource documenta os papeis que suporta dentro da pipeline:
 
 O completion pertence ao source, porque e ele que decide como responder, confirmar ou liberar retry para a origem. Hoje o completion e operacional e implicito. O schema generico documentado abaixo e o modelo planejado para tornar essa etapa configuravel.
 
+No codigo, os schemas de pipeline ficam em `src/pipeline/config.rs` com structs separadas por resource e papel, como `HttpSourceConfig`, `HttpTargetConfig`, `SqsSourceConfig`, `SqsTargetConfig` e `TemplateTransformConfig`.
+
 ### HTTP
 
 HTTP pode ser usado como `source` e como `target`.

@@ -23,16 +23,16 @@ pub fn router(config: &BridgeConfig) -> Router<AppState> {
     let Some(pipeline) = config.pipeline.as_ref().filter(|pipeline| pipeline.enabled) else {
         return Router::new();
     };
-    let SourceConfig::Http { method, path } = &pipeline.source else {
+    let SourceConfig::Http(source) = &pipeline.source else {
         return Router::new();
     };
-    if !method.eq_ignore_ascii_case("POST") {
+    if !source.method.eq_ignore_ascii_case("POST") {
         return Router::new();
     }
 
     let pipeline_id = Arc::new(pipeline.id.clone());
     Router::new().route(
-        path,
+        &source.path,
         post(move |state, params, query, uri, headers, body| {
             handle_pipeline_http(
                 state,

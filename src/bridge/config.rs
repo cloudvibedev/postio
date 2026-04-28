@@ -121,23 +121,21 @@ fn validate_pipeline(pipeline: &PipelineConfig) -> Result<()> {
     }
 
     match &pipeline.source {
-        SourceConfig::Http { method, path } => {
-            if !method.eq_ignore_ascii_case("POST") {
+        SourceConfig::Http(config) => {
+            if !config.method.eq_ignore_ascii_case("POST") {
                 return Err(anyhow!(
                     "pipeline {} http source supports only POST for now",
                     pipeline.id
                 ));
             }
-            if path.trim().is_empty() || !path.starts_with('/') {
+            if config.path.trim().is_empty() || !config.path.starts_with('/') {
                 return Err(anyhow!(
                     "pipeline {} http source path must start with /",
                     pipeline.id
                 ));
             }
         }
-        SourceConfig::Sqs {
-            queue, queue_url, ..
-        } if queue.is_none() && queue_url.is_none() => {
+        SourceConfig::Sqs(config) if config.queue.is_none() && config.queue_url.is_none() => {
             return Err(anyhow!(
                 "pipeline {} sqs source requires queue or queueUrl",
                 pipeline.id
@@ -147,23 +145,21 @@ fn validate_pipeline(pipeline: &PipelineConfig) -> Result<()> {
     }
 
     match &pipeline.target {
-        TargetConfig::Http { method, url, .. } => {
-            if method.trim().is_empty() {
+        TargetConfig::Http(config) => {
+            if config.method.trim().is_empty() {
                 return Err(anyhow!(
                     "pipeline {} http target method cannot be empty",
                     pipeline.id
                 ));
             }
-            if url.trim().is_empty() {
+            if config.url.trim().is_empty() {
                 return Err(anyhow!(
                     "pipeline {} http target url cannot be empty",
                     pipeline.id
                 ));
             }
         }
-        TargetConfig::Sqs {
-            queue, queue_url, ..
-        } if queue.is_none() && queue_url.is_none() => {
+        TargetConfig::Sqs(config) if config.queue.is_none() && config.queue_url.is_none() => {
             return Err(anyhow!(
                 "pipeline {} sqs target requires queue or queueUrl",
                 pipeline.id
@@ -179,16 +175,16 @@ fn validate_pipeline_route_conflicts(
     routes: &[RouteConfig],
     pipeline: &PipelineConfig,
 ) -> Result<()> {
-    let SourceConfig::Http { method, path } = &pipeline.source else {
+    let SourceConfig::Http(source) = &pipeline.source else {
         return Ok(());
     };
-    if !pipeline.enabled || !method.eq_ignore_ascii_case("POST") {
+    if !pipeline.enabled || !source.method.eq_ignore_ascii_case("POST") {
         return Ok(());
     }
 
     if let Some(route) = routes
         .iter()
-        .find(|route| route.method.eq_ignore_ascii_case("POST") && route.path == *path)
+        .find(|route| route.method.eq_ignore_ascii_case("POST") && route.path == source.path)
     {
         return Err(anyhow!(
             "pipeline {} http source path conflicts with route {}",
@@ -251,6 +247,17 @@ pipeline:
         assert_eq!(pipeline.id, "http-to-sqs");
         assert_eq!(pipeline.source.type_name(), "http");
         assert_eq!(pipeline.target.type_name(), "sqs");
+
+        let SourceConfig::Http(source) = pipeline.source else {
+            panic!("expected http source");
+        };
+        assert_eq!(source.method, "POST");
+        assert_eq!(source.path, "/orders");
+
+        let TargetConfig::Sqs(target) = pipeline.target else {
+            panic!("expected sqs target");
+        };
+        assert_eq!(target.queue.as_deref(), Some("orders-output"));
     }
 
     #[test]
@@ -281,13 +288,13 @@ pipeline:
         let config = validate_config(config).expect("config is valid");
         let pipeline = config.pipeline.expect("pipeline");
         let transform = pipeline.transform.expect("transform");
-        let crate::pipeline::config::TransformConfig::Template { output } = transform;
+        let crate::pipeline::config::TransformConfig::Template(config) = transform;
         assert_eq!(
-            output.headers.expect("headers")["x-event-type"],
+            config.output.headers.expect("headers")["x-event-type"],
             "{{ body.type }}"
         );
-        assert_eq!(output.delay_seconds, Some(2));
-        assert!(output.body.expect("body").is_object());
+        assert_eq!(config.output.delay_seconds, Some(2));
+        assert!(config.output.body.expect("body").is_object());
     }
 
     #[test]

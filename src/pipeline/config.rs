@@ -18,8 +18,13 @@ pub struct PipelineConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "engine", rename_all = "camelCase")]
 pub enum TransformConfig {
-    #[serde(rename_all = "camelCase")]
-    Template { output: TransformTemplateOutput },
+    Template(TemplateTransformConfig),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TemplateTransformConfig {
+    pub output: TransformTemplateOutput,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -37,48 +42,60 @@ pub struct TransformTemplateOutput {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum SourceConfig {
-    #[serde(rename_all = "camelCase")]
-    Http {
-        #[serde(default = "default_method")]
-        method: String,
-        path: String,
-    },
-    #[serde(rename_all = "camelCase")]
-    Sqs {
-        queue: Option<String>,
-        queue_url: Option<String>,
-        #[serde(default = "default_batch_size")]
-        batch_size: i32,
-        #[serde(default = "default_wait_time_seconds")]
-        wait_time_seconds: i32,
-        visibility_timeout_seconds: Option<i32>,
-    },
+    Http(HttpSourceConfig),
+    Sqs(SqsSourceConfig),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpSourceConfig {
+    #[serde(default = "default_method")]
+    pub method: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SqsSourceConfig {
+    pub queue: Option<String>,
+    pub queue_url: Option<String>,
+    #[serde(default = "default_batch_size")]
+    pub batch_size: i32,
+    #[serde(default = "default_wait_time_seconds")]
+    pub wait_time_seconds: i32,
+    pub visibility_timeout_seconds: Option<i32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum TargetConfig {
-    #[serde(rename_all = "camelCase")]
-    Http {
-        #[serde(default = "default_method")]
-        method: String,
-        url: String,
-        headers: Option<BTreeMap<String, String>>,
-        timeout_ms: Option<u64>,
-    },
-    #[serde(rename_all = "camelCase")]
-    Sqs {
-        queue: Option<String>,
-        queue_url: Option<String>,
-        delay_seconds: Option<i32>,
-    },
+    Http(HttpTargetConfig),
+    Sqs(SqsTargetConfig),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpTargetConfig {
+    #[serde(default = "default_method")]
+    pub method: String,
+    pub url: String,
+    pub headers: Option<BTreeMap<String, String>>,
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SqsTargetConfig {
+    pub queue: Option<String>,
+    pub queue_url: Option<String>,
+    pub delay_seconds: Option<i32>,
 }
 
 impl SourceConfig {
     pub fn type_name(&self) -> &'static str {
         match self {
-            SourceConfig::Http { .. } => "http",
-            SourceConfig::Sqs { .. } => "sqs",
+            SourceConfig::Http(_) => "http",
+            SourceConfig::Sqs(_) => "sqs",
         }
     }
 }
@@ -86,8 +103,8 @@ impl SourceConfig {
 impl TargetConfig {
     pub fn type_name(&self) -> &'static str {
         match self {
-            TargetConfig::Http { .. } => "http",
-            TargetConfig::Sqs { .. } => "sqs",
+            TargetConfig::Http(_) => "http",
+            TargetConfig::Sqs(_) => "sqs",
         }
     }
 }

@@ -25,7 +25,9 @@ use postio::{
     libs::telemetry,
     pipeline::{
         config::{
-            PipelineConfig, SourceConfig, TargetConfig, TransformConfig, TransformTemplateOutput,
+            HttpSourceConfig, HttpTargetConfig, PipelineConfig, SourceConfig, SqsSourceConfig,
+            SqsTargetConfig, TargetConfig, TemplateTransformConfig, TransformConfig,
+            TransformTemplateOutput,
         },
         resources::PipelineResources,
         runtime::PipelineRuntime,
@@ -390,17 +392,17 @@ async fn http_pipeline_sends_payload_to_http_target() {
         pipeline: Some(PipelineConfig {
             id: "http-to-http".to_string(),
             enabled: true,
-            source: SourceConfig::Http {
+            source: SourceConfig::Http(HttpSourceConfig {
                 method: "POST".to_string(),
                 path: "/pipe/{tenant}".to_string(),
-            },
+            }),
             transform: None,
-            target: TargetConfig::Http {
+            target: TargetConfig::Http(HttpTargetConfig {
                 method: "POST".to_string(),
                 url: format!("http://{target_addr}/target"),
                 headers: None,
                 timeout_ms: Some(1000),
-            },
+            }),
         }),
     };
     let router = setup_router_with_bridge_config(bridge_config, Arc::new(NoopDispatcher)).await;
@@ -437,16 +439,16 @@ async fn http_pipeline_sends_payload_to_sqs_target() {
         pipeline: Some(PipelineConfig {
             id: "http-to-sqs".to_string(),
             enabled: true,
-            source: SourceConfig::Http {
+            source: SourceConfig::Http(HttpSourceConfig {
                 method: "POST".to_string(),
                 path: "/pipe".to_string(),
-            },
+            }),
             transform: None,
-            target: TargetConfig::Sqs {
+            target: TargetConfig::Sqs(SqsTargetConfig {
                 queue: None,
                 queue_url: Some(sqs.queue_url("output")),
                 delay_seconds: Some(3),
-            },
+            }),
         }),
     };
     let router = setup_router_with_sqs_client(
@@ -492,11 +494,11 @@ async fn http_pipeline_template_transform_sends_payload_to_sqs_target() {
         pipeline: Some(PipelineConfig {
             id: "http-to-sqs-template".to_string(),
             enabled: true,
-            source: SourceConfig::Http {
+            source: SourceConfig::Http(HttpSourceConfig {
                 method: "POST".to_string(),
                 path: "/pipe/{tenant}".to_string(),
-            },
-            transform: Some(TransformConfig::Template {
+            }),
+            transform: Some(TransformConfig::Template(TemplateTransformConfig {
                 output: TransformTemplateOutput {
                     attributes: Some(BTreeMap::from([
                         ("event".to_string(), "{{ body.event }}".into()),
@@ -512,12 +514,12 @@ async fn http_pipeline_template_transform_sends_payload_to_sqs_target() {
                     })),
                     ..TransformTemplateOutput::default()
                 },
-            }),
-            target: TargetConfig::Sqs {
+            })),
+            target: TargetConfig::Sqs(SqsTargetConfig {
                 queue: None,
                 queue_url: Some(sqs.queue_url("output")),
                 delay_seconds: None,
-            },
+            }),
         }),
     };
     let router = setup_router_with_sqs_client(
@@ -571,11 +573,11 @@ async fn http_pipeline_template_transform_sends_payload_and_headers_to_http_targ
         pipeline: Some(PipelineConfig {
             id: "http-to-http-template".to_string(),
             enabled: true,
-            source: SourceConfig::Http {
+            source: SourceConfig::Http(HttpSourceConfig {
                 method: "POST".to_string(),
                 path: "/pipe".to_string(),
-            },
-            transform: Some(TransformConfig::Template {
+            }),
+            transform: Some(TransformConfig::Template(TemplateTransformConfig {
                 output: TransformTemplateOutput {
                     headers: Some(BTreeMap::from([(
                         "x-postio-event".to_string(),
@@ -592,13 +594,13 @@ async fn http_pipeline_template_transform_sends_payload_and_headers_to_http_targ
                     })),
                     ..TransformTemplateOutput::default()
                 },
-            }),
-            target: TargetConfig::Http {
+            })),
+            target: TargetConfig::Http(HttpTargetConfig {
                 method: "POST".to_string(),
                 url: format!("http://{target_addr}/target"),
                 headers: None,
                 timeout_ms: Some(1000),
-            },
+            }),
         }),
     };
     let router = setup_router_with_bridge_config(bridge_config, Arc::new(NoopDispatcher)).await;
@@ -644,17 +646,17 @@ async fn http_pipeline_reports_failed_http_target() {
         pipeline: Some(PipelineConfig {
             id: "http-to-failed-http".to_string(),
             enabled: true,
-            source: SourceConfig::Http {
+            source: SourceConfig::Http(HttpSourceConfig {
                 method: "POST".to_string(),
                 path: "/pipe".to_string(),
-            },
+            }),
             transform: None,
-            target: TargetConfig::Http {
+            target: TargetConfig::Http(HttpTargetConfig {
                 method: "POST".to_string(),
                 url: format!("http://{target_addr}/target"),
                 headers: None,
                 timeout_ms: Some(200),
-            },
+            }),
         }),
     };
     let router = setup_router_with_bridge_config(bridge_config, Arc::new(NoopDispatcher)).await;
@@ -700,20 +702,20 @@ async fn sqs_pipeline_sends_payload_to_http_target_and_deletes_source_message() 
         pipeline: Some(PipelineConfig {
             id: "sqs-to-http".to_string(),
             enabled: true,
-            source: SourceConfig::Sqs {
+            source: SourceConfig::Sqs(SqsSourceConfig {
                 queue: None,
                 queue_url: Some(sqs.queue_url("input")),
                 batch_size: 1,
                 wait_time_seconds: 0,
                 visibility_timeout_seconds: Some(5),
-            },
+            }),
             transform: None,
-            target: TargetConfig::Http {
+            target: TargetConfig::Http(HttpTargetConfig {
                 method: "POST".to_string(),
                 url: format!("http://{target_addr}/target"),
                 headers: None,
                 timeout_ms: Some(1000),
-            },
+            }),
         }),
     };
 
@@ -756,14 +758,14 @@ async fn sqs_pipeline_template_transform_sends_payload_and_headers_to_http_targe
         pipeline: Some(PipelineConfig {
             id: "sqs-to-http-template".to_string(),
             enabled: true,
-            source: SourceConfig::Sqs {
+            source: SourceConfig::Sqs(SqsSourceConfig {
                 queue: None,
                 queue_url: Some(sqs.queue_url("input")),
                 batch_size: 1,
                 wait_time_seconds: 0,
                 visibility_timeout_seconds: Some(5),
-            },
-            transform: Some(TransformConfig::Template {
+            }),
+            transform: Some(TransformConfig::Template(TemplateTransformConfig {
                 output: TransformTemplateOutput {
                     headers: Some(BTreeMap::from([(
                         "x-postio-event".to_string(),
@@ -779,13 +781,13 @@ async fn sqs_pipeline_template_transform_sends_payload_and_headers_to_http_targe
                     })),
                     ..TransformTemplateOutput::default()
                 },
-            }),
-            target: TargetConfig::Http {
+            })),
+            target: TargetConfig::Http(HttpTargetConfig {
                 method: "POST".to_string(),
                 url: format!("http://{target_addr}/target"),
                 headers: None,
                 timeout_ms: Some(1000),
-            },
+            }),
         }),
     };
 
@@ -841,19 +843,19 @@ async fn sqs_pipeline_sends_payload_to_sqs_target_and_deletes_source_message() {
         pipeline: Some(PipelineConfig {
             id: "sqs-to-sqs".to_string(),
             enabled: true,
-            source: SourceConfig::Sqs {
+            source: SourceConfig::Sqs(SqsSourceConfig {
                 queue: None,
                 queue_url: Some(sqs.queue_url("input")),
                 batch_size: 1,
                 wait_time_seconds: 0,
                 visibility_timeout_seconds: None,
-            },
+            }),
             transform: None,
-            target: TargetConfig::Sqs {
+            target: TargetConfig::Sqs(SqsTargetConfig {
                 queue: None,
                 queue_url: Some(sqs.queue_url("output")),
                 delay_seconds: None,
-            },
+            }),
         }),
     };
 
@@ -897,14 +899,14 @@ async fn sqs_pipeline_template_transform_sends_attributes_to_sqs_target() {
         pipeline: Some(PipelineConfig {
             id: "sqs-to-sqs-template".to_string(),
             enabled: true,
-            source: SourceConfig::Sqs {
+            source: SourceConfig::Sqs(SqsSourceConfig {
                 queue: None,
                 queue_url: Some(sqs.queue_url("input")),
                 batch_size: 1,
                 wait_time_seconds: 0,
                 visibility_timeout_seconds: None,
-            },
-            transform: Some(TransformConfig::Template {
+            }),
+            transform: Some(TransformConfig::Template(TemplateTransformConfig {
                 output: TransformTemplateOutput {
                     attributes: Some(BTreeMap::from([
                         ("event".to_string(), "{{ body.event }}".into()),
@@ -919,12 +921,12 @@ async fn sqs_pipeline_template_transform_sends_attributes_to_sqs_target() {
                     })),
                     ..TransformTemplateOutput::default()
                 },
-            }),
-            target: TargetConfig::Sqs {
+            })),
+            target: TargetConfig::Sqs(SqsTargetConfig {
                 queue: None,
                 queue_url: Some(sqs.queue_url("output")),
                 delay_seconds: None,
-            },
+            }),
         }),
     };
 

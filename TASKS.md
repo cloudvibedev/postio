@@ -127,6 +127,8 @@ Notas da primeira entrega:
 - `[x]` Documentar resource `HTTP` por papeis: `source`, `target` e `completion`.
 - `[x]` Documentar resource `SQS` por papeis: `source`, `target` e `completion`.
 - `[x]` Explicitar que completion atual e implicito por source e que o schema generico ainda e planejado.
+- `[x]` Refatorar o schema de pipeline no codigo para structs individuais por resource/papel: `HttpSourceConfig`, `HttpTargetConfig`, `SqsSourceConfig`, `SqsTargetConfig` e `TemplateTransformConfig`.
+- `[x]` Manter compatibilidade do YAML/JSON existente apos a refatoracao dos schemas.
 
 ### Fechar Transform Template
 
@@ -184,7 +186,7 @@ Decisao:
 - `[x]` Criar rota sandbox `POST /postio/pipeline/error` para validar traces de erro.
 - `[x]` Confirmar que a rota retorna `502` quando o target HTTP falha.
 - `[x]` Confirmar que a rota aparece no Tempo com `result.status=failed`.
-- `[ ]` Decidir se a rota `POST /postio/pipeline/error` deve permanecer no sandbox para validacoes futuras ou ser removida.
+- `[x]` Decidir se a rota `POST /postio/pipeline/error` deve permanecer no sandbox para validacoes futuras ou ser removida.
 
 ## Bloqueios Atuais
 
