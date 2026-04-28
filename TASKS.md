@@ -142,11 +142,19 @@ Notas:
 
 ### Rotas De Validacao Em Sandbox
 
-- `[ ]` Decidir se a rota `POST /postio/pipeline/error` deve permanecer como rota operacional de teste.
-- `[ ]` Se permanecer, documentar que ela e sandbox-only e existe para validar traces de falha.
-- `[ ]` Se for removida, remover manifests do `k8s-sandbox` e validar que os demais testes continuam passando.
-- `[ ]` Decidir se a rota `POST /postio/pipeline/template/http/{tenant}` deve permanecer como rota operacional de teste para transform template.
-- `[ ]` Se permanecer, documentar que ela e sandbox-only e existe para validar `body`, `headers` e `query`.
+- `[x]` Decidir se a rota `POST /postio/pipeline/error` deve permanecer como rota operacional de teste.
+- `[x]` Se permanecer, documentar que ela e sandbox-only e existe para validar traces de falha.
+- `[x]` Remocao da rota `POST /postio/pipeline/error` descartada nesta fase.
+- `[x]` Decidir se a rota `POST /postio/pipeline/template/http/{tenant}` deve permanecer como rota operacional de teste para transform template.
+- `[x]` Se permanecer, documentar que ela e sandbox-only e existe para validar `body`, `headers` e `query`.
+
+Decisao:
+
+- Manter `POST /postio/pipeline/error` no sandbox.
+- A rota e sandbox-only e existe para validar comportamento de erro, resposta `502`, spans de falha e propagacao de trace.
+- Manter `POST /postio/pipeline/template/http/{tenant}` no sandbox.
+- A rota e sandbox-only e existe para validar `transform.engine: template` montando `body`, `headers` e `query` para target HTTP.
+- As duas rotas tambem estao documentadas no README na secao `Rotas sandbox`.
 
 ### Proxima Capacidade Estrutural
 

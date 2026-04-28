@@ -22,6 +22,7 @@ A evolucao v1 adiciona um modo de pipeline unica por processo. Nessa primeira im
 - [Exemplos simples](#exemplos-simples)
 - [Exemplo complexo](#exemplo-complexo)
 - [Chamando a API](#chamando-a-api)
+- [Rotas sandbox](#rotas-sandbox)
 - [Observabilidade](#observabilidade)
 - [Operacao](#operacao)
 - [Testes e desenvolvimento](#testes-e-desenvolvimento)
@@ -1002,6 +1003,59 @@ Exemplo de echo:
 curl -X POST http://127.0.0.1:8080/echo \
   -H 'content-type: application/json' \
   -d '{"debug":true}'
+```
+
+## Rotas sandbox
+
+As rotas abaixo existem no ambiente sandbox para validacao operacional do pipeline. Elas nao fazem parte da API de negocio e devem ser tratadas como endpoints sandbox-only.
+
+### POST /postio/pipeline/error
+
+Valida o comportamento de erro do pipeline.
+
+Fluxo:
+
+```text
+HTTP input -> HTTP target invalido
+```
+
+O target aponta para uma porta local que nao deve responder. A rota deve retornar erro e registrar a falha nos traces.
+
+Ela existe para validar:
+
+- resposta `502`;
+- span `postio.pipeline.target.send`;
+- `result.status=failed`;
+- `error.kind=target_send_failed`;
+- propagacao de `traceparent`;
+- visualizacao da falha no Tempo/Grafana.
+
+### POST /postio/pipeline/template/http/{tenant}
+
+Valida `transform.engine: template` montando um request HTTP de saida.
+
+Fluxo:
+
+```text
+HTTP input -> transform template -> HTTP target de captura
+```
+
+Ela existe para validar:
+
+- `body` transformado;
+- headers dinamicos, como `x-postio-event`;
+- query string dinamica;
+- uso de `params.tenant`;
+- uso de `query.source`;
+- uso de headers recebidos da fonte HTTP.
+
+Exemplo:
+
+```bash
+curl -X POST 'http://gateway.sdx.autob/postio/pipeline/template/http/acme?source=checkout' \
+  -H 'content-type: application/json' \
+  -H 'x-source: integration' \
+  -d '{"event":"order.created","priority":3,"total":42}'
 ```
 
 ## Observabilidade
