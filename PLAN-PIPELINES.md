@@ -2437,6 +2437,9 @@ pipeline:
       headers:
         content-type: application/json
         x-postio-event: "{{ body.event }}"
+      query:
+        event: "{{ body.event }}"
+        source: "{{ context.sourceType }}"
       body:
         event: "{{ body.event }}"
         orderId: "{{ body.order.id }}"
@@ -2470,6 +2473,7 @@ pipeline:
 - Suportar sintaxe `{{ ... }}`.
 - Acessar `params`, `query`, `headers`, `attributes`, `body`, `form`, `file`, `context`.
 - Garantir merge entre `target` default e `transform.output`.
+- `transform.output.query` monta query string dinamica para targets HTTP.
 
 Exemplo:
 

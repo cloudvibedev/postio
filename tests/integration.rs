@@ -10,7 +10,7 @@ use aws_sdk_sqs::{
 use axum::{
     body::{Body, Bytes},
     extract::State as AxumState,
-    http::{HeaderMap, Method, Request, StatusCode},
+    http::{HeaderMap, Method, Request, StatusCode, Uri},
     response::Response,
     routing::post,
     Json, Router,
@@ -571,6 +571,11 @@ async fn http_pipeline_template_transform_sends_payload_and_headers_to_http_targ
                         "x-postio-event".to_string(),
                         "{{ body.event }}".to_string(),
                     )])),
+                    query: Some(BTreeMap::from([
+                        ("event".to_string(), "{{ body.event }}".into()),
+                        ("priority".to_string(), json!("{{ body.priority }}")),
+                        ("source".to_string(), "{{ headers.x-source }}".into()),
+                    ])),
                     body: Some(json!({
                         "event": "{{ body.event }}",
                         "source": "{{ headers.x-source }}"
@@ -596,7 +601,7 @@ async fn http_pipeline_template_transform_sends_payload_and_headers_to_http_targ
                 .uri("/pipe")
                 .header("content-type", "application/json")
                 .header("x-source", "integration")
-                .body(Body::from(r#"{"event":"invoice.paid"}"#))
+                .body(Body::from(r#"{"event":"invoice.paid","priority":3}"#))
                 .expect("build request"),
         )
         .await
@@ -606,6 +611,10 @@ async fn http_pipeline_template_transform_sends_payload_and_headers_to_http_targ
     let captured = captured.lock().await;
     assert_eq!(captured.len(), 1);
     assert_eq!(captured[0].header.as_deref(), Some("invoice.paid"));
+    assert_eq!(
+        captured[0].query.as_deref(),
+        Some("event=invoice.paid&priority=3&source=integration")
+    );
     assert_eq!(
         captured[0].body,
         r#"{"event":"invoice.paid","source":"integration"}"#
@@ -893,6 +902,7 @@ async fn capture_pipeline_target(
 struct CapturedHttpRequest {
     body: String,
     header: Option<String>,
+    query: Option<String>,
 }
 
 async fn spawn_http_target_with_headers(
@@ -915,6 +925,7 @@ async fn spawn_http_target_with_headers(
 
 async fn capture_pipeline_target_with_headers(
     AxumState(captured): AxumState<Arc<tokio::sync::Mutex<Vec<CapturedHttpRequest>>>>,
+    uri: Uri,
     headers: HeaderMap,
     body: String,
 ) -> Json<Value> {
@@ -924,6 +935,7 @@ async fn capture_pipeline_target_with_headers(
             .get("x-postio-event")
             .and_then(|value| value.to_str().ok())
             .map(ToString::to_string),
+        query: uri.query().map(ToString::to_string),
     });
     Json(serde_json::json!({ "received": true }))
 }

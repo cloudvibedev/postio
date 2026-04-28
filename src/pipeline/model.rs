@@ -97,6 +97,7 @@ pub struct TargetRequestOverrides {
     pub method: Option<String>,
     pub url: Option<String>,
     pub headers: BTreeMap<String, String>,
+    pub query: BTreeMap<String, String>,
     pub delay_seconds: Option<i32>,
 }
 

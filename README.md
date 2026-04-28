@@ -250,7 +250,7 @@ Campos de `transform.output`:
 | `method` | nao | sim para target HTTP | Metodo dinamico do target HTTP. |
 | `url` | nao | sim para target HTTP | URL dinamica do target HTTP. |
 | `delaySeconds` | nao | sim para target SQS | Delay dinamico usado no envio SQS. |
-| `query` | nao | reservado | Planejado para montar query string do target HTTP. |
+| `query` | nao | sim para target HTTP | Query string dinamica enviada ao target HTTP. |
 | `attributes` | nao | reservado | Planejado para atributos SQS. |
 
 Contexto disponivel no template:
@@ -285,6 +285,9 @@ pipeline:
     output:
       headers:
         x-postio-event: "{{ body.event }}"
+      query:
+        event: "{{ body.event }}"
+        source: "{{ headers.x-source }}"
       body:
         event: "{{ body.event }}"
         source: "{{ headers.x-source }}"
@@ -312,6 +315,9 @@ pipeline:
         content-type: application/json
         x-postio-source: "{{ context.sourceType }}"
         x-postio-event: "{{ body.event }}"
+      query:
+        event: "{{ body.event }}"
+        source: "{{ context.sourceType }}"
       body:
         event: "{{ body.event }}"
         orderId: "{{ body.order.id }}"

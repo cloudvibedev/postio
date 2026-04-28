@@ -227,10 +227,26 @@ fn apply_transform(transform: &TransformConfig, message: &mut PipelineMessage) {
                     .map(|(key, value)| (key.clone(), render_to_string(value, &ctx)))
                     .collect();
             }
+            if let Some(query) = &output.query {
+                message.target.query = query
+                    .iter()
+                    .map(|(key, value)| (key.clone(), render_query_value(value, &ctx)))
+                    .collect();
+            }
             if let Some(delay_seconds) = output.delay_seconds {
                 message.target.delay_seconds = Some(delay_seconds);
             }
         }
+    }
+}
+
+fn render_query_value(value: &serde_json::Value, ctx: &TemplateContext) -> String {
+    match render_value(value, ctx) {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::String(value) => value,
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        value => value.to_string(),
     }
 }
 
@@ -393,6 +409,9 @@ async fn send_to_target(
             }
             for (key, value) in &message.target.headers {
                 request = request.header(key, value);
+            }
+            if !message.target.query.is_empty() {
+                request = request.query(&message.target.query);
             }
             if let Some(content_type) = &message.metadata.content_type {
                 let has_content_type = headers
