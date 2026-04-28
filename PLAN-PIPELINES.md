@@ -1350,6 +1350,22 @@ Atributos:
 
 Por seguranca, payload completo nao deve ir para traces por padrao.
 
+### Propagacao De Trace Entre Steps
+
+Como o runtime usa `tokio::sync::mpsc` entre tasks, cada `PipelineMessage` deve carregar o contexto de trace atual.
+
+Sem essa propagacao, spans como `decode`, `validate`, `transform`, `target` e `complete` podem aparecer no Tempo como traces separados, mesmo pertencendo a mesma mensagem. A implementacao deve extrair o contexto no source, armazenar na mensagem e reanexar esse contexto como parent span em cada step.
+
+Requisitos:
+
+- `PipelineMessage.trace` deve preservar `trace_id`, `span_id`/parent e baggage relevante quando existir.
+- Source HTTP deve aceitar `traceparent` recebido e criar o contexto inicial quando ausente.
+- Source SQS deve aceitar trace context vindo de message attributes quando existir e criar contexto novo quando ausente.
+- Cada worker deve criar seu span como filho do contexto carregado na mensagem.
+- Ao enviar para targets HTTP, propagar `traceparent`.
+- Ao enviar para targets SQS, propagar trace context por message attributes quando possivel.
+- Testes de observabilidade devem confirmar que todos os spans de uma mensagem ficam no mesmo trace.
+
 ## Step Channel E Mensagem Interna
 
 Os steps do pipeline devem se comunicar por uma mensagem canonica interna.
