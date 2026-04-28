@@ -355,6 +355,9 @@ target:
   timeoutMs: 5000
   retry:
     maxAttempts: 3
+    backoff:
+      type: fixed
+      delayMs: 500
 ```
 
 Campos:
@@ -367,6 +370,14 @@ Campos:
 | `headers` | nao | Headers default |
 | `timeoutMs` | nao | Timeout da chamada |
 | `retry` | nao | Retry do target |
+
+`target.retry` ja possui schema definido com:
+
+- `maxAttempts`;
+- `backoff.type: fixed` com `delayMs`;
+- `backoff.type: exponential` com `initialMs` e `maxMs`.
+
+A execucao real do retry no runtime ainda e uma tarefa pendente.
 
 ### TargetRequest: HTTP
 
@@ -2274,6 +2285,12 @@ target:
       initialMs: 200
       maxMs: 5000
 ```
+
+Status:
+
+- `[x]` Schema de `target.retry` definido para HTTP e SQS.
+- `[x]` Validacao de config para `maxAttempts`, `fixed.delayMs`, `exponential.initialMs` e `exponential.maxMs`.
+- `[ ]` Execucao de retry/backoff no runtime.
 
 #### DLQ / Dead Letter v1
 

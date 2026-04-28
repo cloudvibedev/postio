@@ -197,7 +197,9 @@ Notas:
 - `[x]` Criar testes de completion HTTP configuravel.
 - `[x]` Criar testes de completion SQS configuravel.
 - `[x]` Criar testes de DLQ/deadLetter.
-- `[ ]` Definir structs de config para `target.retry`, com `maxAttempts` e `backoff`.
+- `[x]` Definir structs de config para `target.retry`, com `maxAttempts` e `backoff`.
+- `[x]` Validar config de `target.retry` para `maxAttempts`, `fixed.delayMs`, `exponential.initialMs` e `exponential.maxMs`.
+- `[x]` Criar testes de parsing/validacao do schema `target.retry`.
 - `[ ]` Implementar retry de target HTTP.
 - `[ ]` Implementar retry de target SQS.
 - `[ ]` Criar testes de retry de target.
@@ -206,6 +208,7 @@ Notas:
 
 - Primeira implementacao deve preferir backoff `fixed`, mantendo `exponential` planejado para uma etapa seguinte.
 - `target.retry` controla apenas tentativas de entrega para o destino.
+- O schema de `target.retry` ja aceita `fixed` e `exponential`; o runtime ainda nao executa as tentativas.
 - `source.completion` controla resposta, ack, retry, drop ou deadLetter do source original.
 - Primeira implementacao de `deadLetter` foi feita com SQS.
 - HTTP completion suporta override de status/body em `onSuccess`, `onFailure` e `onValidationFailure`.

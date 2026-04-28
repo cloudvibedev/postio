@@ -5,7 +5,10 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::pipeline::{
-    config::{PipelineConfig, SourceConfig, SqsCompletionAction, TargetConfig},
+    config::{
+        PipelineConfig, RetryBackoffConfig, SourceConfig, SqsCompletionAction, TargetConfig,
+        TargetRetryConfig,
+    },
     validation::PipelineValidator,
 };
 
@@ -196,6 +199,7 @@ fn validate_pipeline(pipeline: &PipelineConfig) -> Result<()> {
                     pipeline.id
                 ));
             }
+            validate_target_retry(pipeline, config.retry.as_ref())?;
         }
         TargetConfig::Sqs(config) if config.queue.is_none() && config.queue_url.is_none() => {
             return Err(anyhow!(
@@ -203,7 +207,9 @@ fn validate_pipeline(pipeline: &PipelineConfig) -> Result<()> {
                 pipeline.id
             ));
         }
-        _ => {}
+        TargetConfig::Sqs(config) => {
+            validate_target_retry(pipeline, config.retry.as_ref())?;
+        }
     }
 
     PipelineValidator::compile(pipeline.validate.clone())
@@ -257,6 +263,45 @@ fn validate_http_completion_rule(
             pipeline.id,
             name
         ));
+    }
+    Ok(())
+}
+
+fn validate_target_retry(
+    pipeline: &PipelineConfig,
+    retry: Option<&TargetRetryConfig>,
+) -> Result<()> {
+    let Some(retry) = retry else {
+        return Ok(());
+    };
+    if retry.max_attempts == 0 {
+        return Err(anyhow!(
+            "pipeline {} target retry maxAttempts must be greater than zero",
+            pipeline.id
+        ));
+    }
+    match &retry.backoff {
+        RetryBackoffConfig::Fixed { delay_ms } if *delay_ms == 0 => {
+            return Err(anyhow!(
+                "pipeline {} target retry fixed delayMs must be greater than zero",
+                pipeline.id
+            ));
+        }
+        RetryBackoffConfig::Exponential { initial_ms, max_ms } => {
+            if *initial_ms == 0 {
+                return Err(anyhow!(
+                    "pipeline {} target retry exponential initialMs must be greater than zero",
+                    pipeline.id
+                ));
+            }
+            if max_ms < initial_ms {
+                return Err(anyhow!(
+                    "pipeline {} target retry exponential maxMs must be greater than or equal to initialMs",
+                    pipeline.id
+                ));
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -464,6 +509,74 @@ pipeline:
             error
                 .to_string()
                 .contains("deadLetter requires queue or queueUrl"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn parses_pipeline_target_retry() {
+        let config: BridgeConfig = serde_yaml::from_str(
+            r#"
+pipeline:
+  id: http-to-sqs
+  source:
+    type: http
+    path: /orders
+  target:
+    type: sqs
+    queue: orders-output
+    retry:
+      maxAttempts: 3
+      backoff:
+        type: exponential
+        initialMs: 200
+        maxMs: 5000
+"#,
+        )
+        .expect("config parses");
+
+        let config = validate_config(config).expect("config is valid");
+        let pipeline = config.pipeline.expect("pipeline");
+        let TargetConfig::Sqs(target) = pipeline.target else {
+            panic!("expected sqs target");
+        };
+        let retry = target.retry.expect("retry");
+        assert_eq!(retry.max_attempts, 3);
+        assert!(matches!(
+            retry.backoff,
+            crate::pipeline::config::RetryBackoffConfig::Exponential {
+                initial_ms: 200,
+                max_ms: 5000
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_target_retry() {
+        let config: BridgeConfig = serde_yaml::from_str(
+            r#"
+pipeline:
+  id: http-to-http
+  source:
+    type: http
+    path: /orders
+  target:
+    type: http
+    url: https://api.example.com/orders
+    retry:
+      maxAttempts: 0
+      backoff:
+        type: fixed
+        delayMs: 100
+"#,
+        )
+        .expect("config parses");
+
+        let error = validate_config(config).expect_err("invalid retry is rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("retry maxAttempts must be greater than zero"),
             "{error}"
         );
     }

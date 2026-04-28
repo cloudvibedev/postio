@@ -10,7 +10,9 @@ pub use source::{
     SourceConfig, SqsCompletionAction, SqsCompletionRule, SqsDeadLetterConfig,
     SqsSourceCompletionConfig, SqsSourceConfig,
 };
-pub use target::{HttpTargetConfig, SqsTargetConfig, TargetConfig};
+pub use target::{
+    HttpTargetConfig, RetryBackoffConfig, SqsTargetConfig, TargetConfig, TargetRetryConfig,
+};
 pub use transform::{TemplateTransformConfig, TransformConfig, TransformTemplateOutput};
 pub use validate::{JsonSchemaValidateConfig, ValidateConfig};
 

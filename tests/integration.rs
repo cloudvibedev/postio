@@ -420,6 +420,7 @@ async fn http_pipeline_sends_payload_to_http_target() {
                 url: format!("http://{target_addr}/target"),
                 headers: None,
                 timeout_ms: Some(1000),
+                retry: None,
             }),
         }),
     };
@@ -468,6 +469,7 @@ async fn http_pipeline_sends_payload_to_sqs_target() {
                 queue: None,
                 queue_url: Some(sqs.queue_url("output")),
                 delay_seconds: Some(3),
+                retry: None,
             }),
         }),
     };
@@ -539,6 +541,7 @@ async fn http_pipeline_completion_customizes_success_response() {
                 queue: None,
                 queue_url: Some(sqs.queue_url("output")),
                 delay_seconds: None,
+                retry: None,
             }),
         }),
     };
@@ -593,6 +596,7 @@ async fn http_pipeline_jsonschema_validation_allows_valid_payload_to_sqs_target(
                 queue: None,
                 queue_url: Some(sqs.queue_url("output")),
                 delay_seconds: None,
+                retry: None,
             }),
         }),
     };
@@ -644,6 +648,7 @@ async fn http_pipeline_jsonschema_validation_rejects_invalid_payload_before_sqs_
                 queue: None,
                 queue_url: Some(sqs.queue_url("output")),
                 delay_seconds: None,
+                retry: None,
             }),
         }),
     };
@@ -700,6 +705,7 @@ async fn http_pipeline_jsonschema_validation_rejects_invalid_payload_before_http
                 url: format!("http://{target_addr}/target"),
                 headers: None,
                 timeout_ms: Some(1000),
+                retry: None,
             }),
         }),
     };
@@ -757,6 +763,7 @@ async fn http_pipeline_completion_customizes_validation_failure_response() {
                 queue: None,
                 queue_url: Some(sqs.queue_url("output")),
                 delay_seconds: None,
+                retry: None,
             }),
         }),
     };
@@ -824,6 +831,7 @@ async fn http_pipeline_template_transform_sends_payload_to_sqs_target() {
                 queue: None,
                 queue_url: Some(sqs.queue_url("output")),
                 delay_seconds: None,
+                retry: None,
             }),
         }),
     };
@@ -907,6 +915,7 @@ async fn http_pipeline_template_transform_sends_payload_and_headers_to_http_targ
                 url: format!("http://{target_addr}/target"),
                 headers: None,
                 timeout_ms: Some(1000),
+                retry: None,
             }),
         }),
     };
@@ -965,6 +974,7 @@ async fn http_pipeline_reports_failed_http_target() {
                 url: format!("http://{target_addr}/target"),
                 headers: None,
                 timeout_ms: Some(200),
+                retry: None,
             }),
         }),
     };
@@ -1026,6 +1036,7 @@ async fn sqs_pipeline_sends_payload_to_http_target_and_deletes_source_message() 
                 url: format!("http://{target_addr}/target"),
                 headers: None,
                 timeout_ms: Some(1000),
+                retry: None,
             }),
         }),
     };
@@ -1100,6 +1111,7 @@ async fn sqs_pipeline_template_transform_sends_payload_and_headers_to_http_targe
                 url: format!("http://{target_addr}/target"),
                 headers: None,
                 timeout_ms: Some(1000),
+                retry: None,
             }),
         }),
     };
@@ -1173,6 +1185,7 @@ async fn sqs_pipeline_jsonschema_validation_allows_valid_payload_and_deletes_sou
                 url: format!("http://{target_addr}/target"),
                 headers: None,
                 timeout_ms: Some(1000),
+                retry: None,
             }),
         }),
     };
@@ -1234,6 +1247,7 @@ async fn sqs_pipeline_jsonschema_validation_rejects_invalid_payload_without_dele
                 url: format!("http://{target_addr}/target"),
                 headers: None,
                 timeout_ms: Some(1000),
+                retry: None,
             }),
         }),
     };
@@ -1300,6 +1314,7 @@ async fn sqs_pipeline_completion_dead_letters_validation_failure_and_deletes_sou
                 url: format!("http://{target_addr}/target"),
                 headers: None,
                 timeout_ms: Some(1000),
+                retry: None,
             }),
         }),
     };
@@ -1386,6 +1401,7 @@ async fn sqs_pipeline_completion_dead_letters_target_failure_and_deletes_source_
                 url: format!("http://{target_addr}/target"),
                 headers: None,
                 timeout_ms: Some(100),
+                retry: None,
             }),
         }),
     };
@@ -1445,6 +1461,7 @@ async fn sqs_pipeline_sends_payload_to_sqs_target_and_deletes_source_message() {
                 queue: None,
                 queue_url: Some(sqs.queue_url("output")),
                 delay_seconds: None,
+                retry: None,
             }),
         }),
     };
@@ -1518,6 +1535,7 @@ async fn sqs_pipeline_template_transform_sends_attributes_to_sqs_target() {
                 queue: None,
                 queue_url: Some(sqs.queue_url("output")),
                 delay_seconds: None,
+                retry: None,
             }),
         }),
     };

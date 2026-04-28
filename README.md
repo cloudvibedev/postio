@@ -252,7 +252,31 @@ pipeline:
 | `url` | sim | - | Endpoint destino. |
 | `headers` | nao | - | Headers fixos enviados ao target. |
 | `timeoutMs` | nao | sem timeout por request | Timeout da chamada HTTP em milissegundos. |
-| `retry` | nao | sem retry configuravel | Planejado para retry de envio ao target. |
+| `retry` | nao | sem retry | Schema configuravel para retry de envio ao target. A execucao do retry ainda esta pendente. |
+
+#### Target Retry
+
+`target.retry` pode ser usado em targets `http` e `sqs`. Nesta etapa o schema ja e lido e validado, mas o runtime ainda executa uma unica tentativa.
+
+```yaml
+target:
+  type: http
+  url: https://api.example.com/orders
+  retry:
+    maxAttempts: 3
+    backoff:
+      type: exponential
+      initialMs: 200
+      maxMs: 5000
+```
+
+| Propriedade | Obrigatoria | Padrao | Descricao |
+| --- | --- | --- | --- |
+| `maxAttempts` | sim | - | Quantidade maxima de tentativas. Deve ser maior que zero. |
+| `backoff.type` | sim | - | Estrategia de espera. Suporta `fixed` e `exponential`. |
+| `backoff.delayMs` | sim para `fixed` | - | Espera fixa em milissegundos. Deve ser maior que zero. |
+| `backoff.initialMs` | sim para `exponential` | - | Espera inicial em milissegundos. Deve ser maior que zero. |
+| `backoff.maxMs` | sim para `exponential` | - | Espera maxima em milissegundos. Deve ser maior ou igual a `initialMs`. |
 
 ### SQS
 
@@ -350,7 +374,7 @@ pipeline:
 | `queue` | condicional | - | Nome ou URL da fila. Obrigatorio quando `queueUrl` nao existe. |
 | `queueUrl` | condicional | - | URL completa da fila. Se informada, e usada diretamente. |
 | `delaySeconds` | nao | AWS default | Delay aplicado ao envio da mensagem. |
-| `retry` | nao | sem retry configuravel | Planejado para retry de envio ao target SQS. |
+| `retry` | nao | sem retry | Schema configuravel para retry de envio ao target SQS. A execucao do retry ainda esta pendente. |
 
 ### Validate JSON Schema
 
