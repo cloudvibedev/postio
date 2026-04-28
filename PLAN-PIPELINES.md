@@ -242,8 +242,8 @@ pipeline:
   transform: TransformConfig
   target: TargetConfig
   responseTransform: TransformConfig
-  completion: CompletionConfig
-  onValidationFailure: ValidationFailureConfig
+  # source.completion vive dentro do source
+  # target.retry vive dentro do target
 ```
 
 Campos:
@@ -824,32 +824,53 @@ Campos:
 ### CompletionConfig: HTTP Source
 
 ```yaml
-completion:
-  onSuccess:
-    status: 202
-    body:
-      ok: true
-      messageId: "{{ target.messageId }}"
-  onFailure:
-    status: 502
-    body:
-      ok: false
-      error: target_failed
+source:
+  type: http
+  path: /orders
+  completion:
+    onSuccess:
+      response:
+        status: 202
+        body:
+          ok: true
+          messageId: "{{ target.messageId }}"
+    onFailure:
+      response:
+        status: 502
+        body:
+          ok: false
+          error: target_failed
+    onValidationFailure:
+      response:
+        status: 422
+        body:
+          ok: false
+          error: validation_failed
 ```
 
 ### CompletionConfig: SQS Source
 
 ```yaml
-completion:
-  onSuccess:
-    action: ack
-  onFailure:
-    action: retry
-    maxAttempts: 5
-    deadLetter:
-      type: sqs
-      queue: postio-dlq
+source:
+  type: sqs
+  queue: orders-input
+  completion:
+    onSuccess:
+      action: ack
+    onFailure:
+      action: retry
+    onValidationFailure:
+      action: deadLetter
+      deadLetter:
+        type: sqs
+        queue: postio-invalid-dlq
 ```
+
+Decisao de ownership:
+
+- `source.completion` pertence ao source, porque finaliza a interacao com a origem original.
+- `target.retry` pertence ao target, porque controla as tentativas de entrega para o destino.
+- `deadLetter` fica dentro de `source.completion`, porque e uma decisao de finalizacao da mensagem original apos falha ou rejeicao.
 
 ## Tipos De Source
 
@@ -1142,19 +1163,29 @@ Falha de validacao deve ser tratada como erro permanente por padrao.
 Para HTTP:
 
 ```yaml
-onValidationFailure:
-  http:
-    status: 422
-    body:
-      code: validation_failed
+source:
+  type: http
+  path: /orders
+  completion:
+    onValidationFailure:
+      response:
+        status: 422
+        body:
+          code: validation_failed
 ```
 
 Para SQS:
 
 ```yaml
-onValidationFailure:
-  sqs:
-    action: deadLetter
+source:
+  type: sqs
+  queue: orders-input
+  completion:
+    onValidationFailure:
+      action: deadLetter
+      deadLetter:
+        type: sqs
+        queue: postio-invalid-dlq
 ```
 
 Acoes possiveis:
@@ -1296,9 +1327,19 @@ Cada source tem semantica propria.
 O resultado final vira HTTP response.
 
 ```yaml
-completion:
-  successStatus: 202
-  failureStatus: 502
+source:
+  type: http
+  path: /orders
+  completion:
+    onSuccess:
+      response:
+        status: 202
+    onFailure:
+      response:
+        status: 502
+    onValidationFailure:
+      response:
+        status: 422
 ```
 
 ### SQS Source
@@ -1306,15 +1347,19 @@ completion:
 O resultado final decide delete, retry ou DLQ.
 
 ```yaml
-completion:
-  onSuccess:
-    action: ack
-  onFailure:
-    action: retry
-    maxAttempts: 5
-    deadLetter:
-      type: sqs
-      queue: postio-dlq
+source:
+  type: sqs
+  queue: orders-input
+  completion:
+    onSuccess:
+      action: ack
+    onFailure:
+      action: retry
+    onValidationFailure:
+      action: deadLetter
+      deadLetter:
+        type: sqs
+        queue: postio-invalid-dlq
 ```
 
 Regras:
@@ -2223,23 +2268,34 @@ Itens que devem ficar em v1:
 #### Retry/Backoff v1
 
 ```yaml
-retry:
-  maxAttempts: 3
-  backoff:
-    type: exponential
-    initialMs: 200
-    maxMs: 5000
+target:
+  type: http
+  url: https://api.example.com/orders
+  retry:
+    maxAttempts: 3
+    backoff:
+      type: exponential
+      initialMs: 200
+      maxMs: 5000
 ```
 
-#### DLQ / Failure Target v1
+#### DLQ / Dead Letter v1
 
 ```yaml
-completion:
-  onFailure:
-    action: sendToTarget
-    target:
-      type: sqs
-      queue: postio-dlq
+source:
+  type: sqs
+  queue: orders-input
+  completion:
+    onFailure:
+      action: deadLetter
+      deadLetter:
+        type: sqs
+        queue: postio-dlq
+    onValidationFailure:
+      action: deadLetter
+      deadLetter:
+        type: sqs
+        queue: postio-invalid-dlq
 ```
 
 #### Idempotencia v1

@@ -128,7 +128,7 @@ pipeline:
 | `transform` | nao | noop | Transformacao opcional antes do target. Nesta fase suporta `engine: template`. |
 | `target` | sim | - | Saida da pipeline. Nesta fase pode ser `http` ou `sqs`. |
 
-`completion` ainda nao e um campo configuravel no runtime atual. A politica existe de forma implicita por source e o schema planejado esta documentado em cada resource.
+`source.completion` ainda nao e um campo configuravel no runtime atual. A politica existe de forma implicita por source e o schema planejado esta documentado em cada resource.
 
 ## Resources
 
@@ -136,11 +136,11 @@ Cada resource documenta os papeis que suporta dentro da pipeline:
 
 - `source`: como o dado entra na pipeline.
 - `target`: como a pipeline envia dados para fora.
-- `completion`: como a pipeline finaliza a conversa com o source original.
+- `source.completion`: como a pipeline finaliza a conversa com o source original.
 
-O completion pertence ao source, porque e ele que decide como responder, confirmar ou liberar retry para a origem. Hoje o completion e operacional e implicito. O schema generico documentado abaixo e o modelo planejado para tornar essa etapa configuravel.
+O completion pertence ao `source`, porque e ele que decide como responder, confirmar ou liberar retry para a origem. Ja o retry de envio pertence ao `target`, como `target.retry`, porque controla tentativas de entrega para o destino. Hoje o completion e operacional e implicito. O schema generico documentado abaixo e o modelo planejado para tornar essa etapa configuravel.
 
-No codigo, os schemas de pipeline ficam em `src/pipeline/config/`, separados por familia: `source.rs`, `target.rs` e `transform.rs`. As structs continuam separadas por resource e papel, como `HttpSourceConfig`, `HttpTargetConfig`, `SqsSourceConfig`, `SqsTargetConfig` e `TemplateTransformConfig`.
+No codigo, os schemas de pipeline ficam em `src/pipeline/config/`, separados por familia: `source.rs`, `target.rs`, `transform.rs` e `validate.rs`. As structs continuam separadas por resource e papel, como `HttpSourceConfig`, `HttpTargetConfig`, `SqsSourceConfig`, `SqsTargetConfig`, `TemplateTransformConfig` e `ValidateConfig`.
 
 ### HTTP
 
@@ -179,32 +179,40 @@ Completion atual para HTTP source:
 Schema planejado:
 
 ```yaml
-completion:
-  onSuccess:
-    action: ack
-    response:
-      status: 202
-      body:
-        ok: true
-        requestId: "{{ context.requestId }}"
-        target: "{{ target }}"
-  onFailure:
-    action: retry
-    response:
-      status: 502
-      body:
-        ok: false
-        error: "{{ error.message }}"
+source:
+  type: http
+  method: POST
+  path: /orders
+  completion:
+    onSuccess:
+      response:
+        status: 202
+        body:
+          ok: true
+          requestId: "{{ context.requestId }}"
+          target: "{{ target }}"
+    onFailure:
+      response:
+        status: 502
+        body:
+          ok: false
+          error: "{{ error.message }}"
+    onValidationFailure:
+      response:
+        status: 422
+        body:
+          ok: false
+          error: validation_failed
 ```
 
 | Propriedade | Obrigatoria | Padrao | Descricao |
 | --- | --- | --- | --- |
-| `onSuccess.action` | nao | `ack` | Acao quando o target conclui com sucesso. Para HTTP, `ack` significa responder sucesso ao cliente. |
 | `onSuccess.response.status` | nao | status do target ou `202` | Status HTTP planejado para resposta customizada. |
 | `onSuccess.response.body` | nao | `CompletionResponse` | Body planejado para resposta customizada. |
-| `onFailure.action` | nao | `retry` | Acao quando o target falha. Para HTTP, `retry` significa responder erro ao cliente. |
 | `onFailure.response.status` | nao | `502` | Status HTTP planejado para resposta de falha. |
 | `onFailure.response.body` | nao | `CompletionResponse` de erro | Body planejado para resposta customizada de falha. |
+| `onValidationFailure.response.status` | nao | `422` | Status HTTP planejado quando a validacao rejeitar o payload. |
+| `onValidationFailure.response.body` | nao | `CompletionResponse` de rejeicao | Body planejado para resposta customizada de validacao. |
 
 #### HTTP Target
 
@@ -221,6 +229,11 @@ pipeline:
     timeoutMs: 5000
     headers:
       x-source: postio
+    retry:
+      maxAttempts: 3
+      backoff:
+        type: fixed
+        delayMs: 500
 ```
 
 | Propriedade | Obrigatoria | Padrao | Descricao |
@@ -230,6 +243,7 @@ pipeline:
 | `url` | sim | - | Endpoint destino. |
 | `headers` | nao | - | Headers fixos enviados ao target. |
 | `timeoutMs` | nao | sem timeout por request | Timeout da chamada HTTP em milissegundos. |
+| `retry` | nao | sem retry configuravel | Planejado para retry de envio ao target. |
 
 ### SQS
 
@@ -273,17 +287,28 @@ Completion atual para SQS source:
 Schema planejado:
 
 ```yaml
-completion:
-  onSuccess:
-    action: ack
-  onFailure:
-    action: retry
+source:
+  type: sqs
+  queue: orders-input
+  completion:
+    onSuccess:
+      action: ack
+    onFailure:
+      action: retry
+    onValidationFailure:
+      action: deadLetter
+      deadLetter:
+        type: sqs
+        queue: orders-invalid-dlq
 ```
 
 | Propriedade | Obrigatoria | Padrao | Descricao |
 | --- | --- | --- | --- |
 | `onSuccess.action` | nao | `ack` | Acao quando o target conclui com sucesso. Para SQS, `ack` significa deletar a mensagem original. |
 | `onFailure.action` | nao | `retry` | Acao quando o target falha. Para SQS, `retry` significa nao deletar a mensagem. |
+| `onValidationFailure.action` | nao | `retry` | Acao quando a validacao rejeita a mensagem. Pode evoluir para `deadLetter` ou `drop`. |
+| `deadLetter.type` | condicional | - | Tipo de DLQ planejado. Na primeira implementacao, `sqs`. |
+| `deadLetter.queue` | condicional | - | Fila SQS que recebe mensagens rejeitadas ou falhadas. |
 | `action=drop` | nao | - | Planejado para descartar a mensagem, deletando-a mesmo quando a pipeline rejeitar ou falhar. |
 
 #### SQS Target
@@ -298,6 +323,11 @@ pipeline:
     type: sqs
     queue: orders-output
     delaySeconds: 5
+    retry:
+      maxAttempts: 3
+      backoff:
+        type: fixed
+        delayMs: 500
 ```
 
 | Propriedade | Obrigatoria | Padrao | Descricao |
@@ -306,6 +336,7 @@ pipeline:
 | `queue` | condicional | - | Nome ou URL da fila. Obrigatorio quando `queueUrl` nao existe. |
 | `queueUrl` | condicional | - | URL completa da fila. Se informada, e usada diretamente. |
 | `delaySeconds` | nao | AWS default | Delay aplicado ao envio da mensagem. |
+| `retry` | nao | sem retry configuravel | Planejado para retry de envio ao target SQS. |
 
 ### Validate JSON Schema
 

@@ -182,6 +182,33 @@ Notas:
 - HTTP source retorna `422 Unprocessable Entity` com `status: rejected` quando a validacao falha.
 - SQS source nao deleta a mensagem quando a validacao falha.
 
+### Completion Configuravel E Target Retry
+
+- `[x]` Decidir que retry de envio pertence ao target como `target.retry`.
+- `[x]` Decidir que completion pertence ao source como `source.completion`.
+- `[x]` Decidir que DLQ/deadLetter pertence ao `source.completion`, pois finaliza a mensagem original.
+- `[x]` Atualizar `PLAN-PIPELINES.md` com ownership de `source.completion`, `target.retry` e `deadLetter`.
+- `[x]` Atualizar README com exemplos planejados por resource.
+- `[ ]` Definir structs de config para `target.retry`, com `maxAttempts` e `backoff`.
+- `[ ]` Definir structs de config para `source.completion` de HTTP source.
+- `[ ]` Definir structs de config para `source.completion` de SQS source.
+- `[ ]` Implementar retry de target HTTP.
+- `[ ]` Implementar retry de target SQS.
+- `[ ]` Implementar `source.completion` configuravel para HTTP.
+- `[ ]` Implementar `source.completion` configuravel para SQS.
+- `[ ]` Implementar `deadLetter` SQS para falha de target e falha de validacao.
+- `[ ]` Criar testes de retry de target.
+- `[ ]` Criar testes de completion HTTP configuravel.
+- `[ ]` Criar testes de completion SQS configuravel.
+- `[ ]` Criar testes de DLQ/deadLetter.
+
+Notas:
+
+- Primeira implementacao deve preferir backoff `fixed`, mantendo `exponential` planejado para uma etapa seguinte.
+- `target.retry` controla apenas tentativas de entrega para o destino.
+- `source.completion` controla resposta, ack, retry, drop ou deadLetter do source original.
+- Primeira implementacao de `deadLetter` deve focar em SQS.
+
 ### Transformacao Avancada
 
 - `[ ]` Revisar no plano o escopo minimo do `transform.engine: rhai`.
