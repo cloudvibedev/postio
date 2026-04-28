@@ -27,9 +27,10 @@ use postio::{
         config::{
             HttpCompletionResponseConfig, HttpCompletionRule, HttpSourceCompletionConfig,
             HttpSourceConfig, HttpTargetConfig, JsonSchemaValidateConfig, PipelineConfig,
-            SourceConfig, SqsCompletionAction, SqsCompletionRule, SqsDeadLetterConfig,
-            SqsSourceCompletionConfig, SqsSourceConfig, SqsTargetConfig, TargetConfig,
-            TemplateTransformConfig, TransformConfig, TransformTemplateOutput, ValidateConfig,
+            RetryBackoffConfig, SourceConfig, SqsCompletionAction, SqsCompletionRule,
+            SqsDeadLetterConfig, SqsSourceCompletionConfig, SqsSourceConfig, SqsTargetConfig,
+            TargetConfig, TargetRetryConfig, TemplateTransformConfig, TransformConfig,
+            TransformTemplateOutput, ValidateConfig,
         },
         resources::PipelineResources,
         runtime::PipelineRuntime,
@@ -506,6 +507,62 @@ async fn http_pipeline_sends_payload_to_sqs_target() {
     assert_eq!(sent[0].queue_url, sqs.queue_url("output"));
     assert_eq!(sent[0].body, r#"{"hello":"sqs"}"#);
     assert_eq!(sent[0].delay_seconds, Some(3));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_pipeline_retries_sqs_target_until_success() {
+    let sqs = MockSqs::spawn_with_send_failures(vec![], 1).await;
+    let bridge_config = BridgeConfig {
+        routes: Vec::new(),
+        pipeline: Some(PipelineConfig {
+            id: "http-to-sqs-retry".to_string(),
+            enabled: true,
+            source: SourceConfig::Http(HttpSourceConfig {
+                method: "POST".to_string(),
+                path: "/pipe".to_string(),
+                completion: None,
+            }),
+            validate: None,
+            transform: None,
+            target: TargetConfig::Sqs(SqsTargetConfig {
+                queue: None,
+                queue_url: Some(sqs.queue_url("output")),
+                delay_seconds: None,
+                retry: Some(TargetRetryConfig {
+                    max_attempts: 2,
+                    backoff: RetryBackoffConfig::Fixed { delay_ms: 1 },
+                }),
+            }),
+        }),
+    };
+    let router = setup_router_with_sqs_client(
+        bridge_config,
+        Arc::new(NoopDispatcher),
+        test_sqs_client_for(sqs.endpoint_url()),
+    )
+    .await;
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/pipe")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"hello":"sqs-retry"}"#))
+                .expect("build request"),
+        )
+        .await
+        .expect("request failed");
+
+    let status = response.status();
+    let body = response_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["status"], "accepted");
+    assert_eq!(sqs.send_attempts().await, 2);
+    let sent = sqs.sent_messages().await;
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].body, r#"{"hello":"sqs-retry"}"#);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1004,6 +1061,58 @@ async fn http_pipeline_reports_failed_http_target() {
             .contains("failed to send http target"),
         "{body}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_pipeline_retries_http_target_until_success() {
+    let attempts = Arc::new(tokio::sync::Mutex::new(0));
+    let target_addr = spawn_flaky_http_target(attempts.clone(), 1).await;
+
+    let bridge_config = BridgeConfig {
+        routes: Vec::new(),
+        pipeline: Some(PipelineConfig {
+            id: "http-to-http-retry".to_string(),
+            enabled: true,
+            source: SourceConfig::Http(HttpSourceConfig {
+                method: "POST".to_string(),
+                path: "/pipe".to_string(),
+                completion: None,
+            }),
+            validate: None,
+            transform: None,
+            target: TargetConfig::Http(HttpTargetConfig {
+                method: "POST".to_string(),
+                url: format!("http://{target_addr}/target"),
+                headers: None,
+                timeout_ms: Some(1000),
+                retry: Some(TargetRetryConfig {
+                    max_attempts: 2,
+                    backoff: RetryBackoffConfig::Fixed { delay_ms: 1 },
+                }),
+            }),
+        }),
+    };
+    let router = setup_router_with_bridge_config(bridge_config, Arc::new(NoopDispatcher)).await;
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/pipe")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"hello":"retry"}"#))
+                .expect("build request"),
+        )
+        .await
+        .expect("request failed");
+
+    let status = response.status();
+    let body = response_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "accepted");
+    assert_eq!(body["targetType"], "http");
+    assert_eq!(*attempts.lock().await, 2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1597,6 +1706,45 @@ async fn capture_pipeline_target(
     Json(serde_json::json!({ "received": true }))
 }
 
+async fn spawn_flaky_http_target(
+    attempts: Arc<tokio::sync::Mutex<usize>>,
+    failures_before_success: usize,
+) -> SocketAddr {
+    let target_app = Router::new()
+        .route("/target", post(capture_flaky_pipeline_target))
+        .with_state((attempts, failures_before_success));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind target server");
+    let target_addr = listener.local_addr().expect("target addr");
+    tokio::spawn(async move {
+        axum::serve(listener, target_app)
+            .await
+            .expect("target server failed");
+    });
+    target_addr
+}
+
+async fn capture_flaky_pipeline_target(
+    AxumState((attempts, failures_before_success)): AxumState<(
+        Arc<tokio::sync::Mutex<usize>>,
+        usize,
+    )>,
+) -> impl axum::response::IntoResponse {
+    let mut attempts = attempts.lock().await;
+    *attempts += 1;
+    if *attempts <= failures_before_success {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "received": false })),
+        );
+    }
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "received": true })),
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CapturedHttpRequest {
     body: String,
@@ -1651,6 +1799,8 @@ struct MockSqsState {
     sent: tokio::sync::Mutex<Vec<MockSqsSend>>,
     deleted: tokio::sync::Mutex<Vec<String>>,
     received: tokio::sync::Mutex<usize>,
+    send_attempts: tokio::sync::Mutex<usize>,
+    send_failures_remaining: tokio::sync::Mutex<usize>,
 }
 
 #[derive(Clone)]
@@ -1670,11 +1820,17 @@ struct MockSqsSend {
 
 impl MockSqs {
     async fn spawn(messages: Vec<MockSqsMessage>) -> Self {
+        Self::spawn_with_send_failures(messages, 0).await
+    }
+
+    async fn spawn_with_send_failures(messages: Vec<MockSqsMessage>, send_failures: usize) -> Self {
         let state = Arc::new(MockSqsState {
             messages: tokio::sync::Mutex::new(messages.into()),
             sent: tokio::sync::Mutex::new(Vec::new()),
             deleted: tokio::sync::Mutex::new(Vec::new()),
             received: tokio::sync::Mutex::new(0),
+            send_attempts: tokio::sync::Mutex::new(0),
+            send_failures_remaining: tokio::sync::Mutex::new(send_failures),
         });
         let app = Router::new()
             .route("/", post(handle_mock_sqs))
@@ -1711,13 +1867,17 @@ impl MockSqs {
     async fn receive_count(&self) -> usize {
         *self.state.received.lock().await
     }
+
+    async fn send_attempts(&self) -> usize {
+        *self.state.send_attempts.lock().await
+    }
 }
 
 async fn handle_mock_sqs(
     AxumState(state): AxumState<Arc<MockSqsState>>,
     headers: HeaderMap,
     body: Bytes,
-) -> Json<Value> {
+) -> impl axum::response::IntoResponse {
     let body: Value = serde_json::from_slice(&body).expect("mock sqs request must be json");
     let target = headers
         .get("x-amz-target")
@@ -1726,6 +1886,19 @@ async fn handle_mock_sqs(
 
     match target {
         "AmazonSQS.SendMessage" => {
+            *state.send_attempts.lock().await += 1;
+            let mut send_failures_remaining = state.send_failures_remaining.lock().await;
+            if *send_failures_remaining > 0 {
+                *send_failures_remaining -= 1;
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "__type": "InternalError",
+                        "message": "mock sqs send failure"
+                    })),
+                );
+            }
+            drop(send_failures_remaining);
             let mut sent = state.sent.lock().await;
             let message_id = format!("mock-sent-{}", sent.len() + 1);
             sent.push(MockSqsSend {
@@ -1734,10 +1907,13 @@ async fn handle_mock_sqs(
                 delay_seconds: body["DelaySeconds"].as_i64(),
                 attributes: sqs_message_attributes_from_request(&body),
             });
-            Json(serde_json::json!({
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
                 "MD5OfMessageBody": "mock-md5",
                 "MessageId": message_id
-            }))
+                })),
+            )
         }
         "AmazonSQS.ReceiveMessage" => {
             *state.received.lock().await += 1;
@@ -1751,21 +1927,27 @@ async fn handle_mock_sqs(
                     })]
                 })
                 .unwrap_or_default();
-            Json(serde_json::json!({ "Messages": messages }))
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "Messages": messages })),
+            )
         }
         "AmazonSQS.DeleteMessage" => {
             if let Some(receipt_handle) = body["ReceiptHandle"].as_str() {
                 state.deleted.lock().await.push(receipt_handle.to_string());
             }
-            Json(serde_json::json!({}))
+            (StatusCode::OK, Json(serde_json::json!({})))
         }
         "AmazonSQS.GetQueueUrl" => {
             let queue_name = body["QueueName"].as_str().unwrap_or("queue");
-            Json(serde_json::json!({
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
                 "QueueUrl": format!("http://mock-sqs/000000000000/{queue_name}")
-            }))
+                })),
+            )
         }
-        _ => Json(serde_json::json!({})),
+        _ => (StatusCode::OK, Json(serde_json::json!({}))),
     }
 }
 

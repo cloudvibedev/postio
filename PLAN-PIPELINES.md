@@ -2290,7 +2290,8 @@ Status:
 
 - `[x]` Schema de `target.retry` definido para HTTP e SQS.
 - `[x]` Validacao de config para `maxAttempts`, `fixed.delayMs`, `exponential.initialMs` e `exponential.maxMs`.
-- `[ ]` Execucao de retry/backoff no runtime.
+- `[x]` Execucao de retry/backoff no runtime para target HTTP e SQS.
+- `[x]` Spans `postio.pipeline.target.attempt` por tentativa.
 
 #### DLQ / Dead Letter v1
 

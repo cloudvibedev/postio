@@ -252,11 +252,11 @@ pipeline:
 | `url` | sim | - | Endpoint destino. |
 | `headers` | nao | - | Headers fixos enviados ao target. |
 | `timeoutMs` | nao | sem timeout por request | Timeout da chamada HTTP em milissegundos. |
-| `retry` | nao | sem retry | Schema configuravel para retry de envio ao target. A execucao do retry ainda esta pendente. |
+| `retry` | nao | sem retry | Retry de envio ao target. |
 
 #### Target Retry
 
-`target.retry` pode ser usado em targets `http` e `sqs`. Nesta etapa o schema ja e lido e validado, mas o runtime ainda executa uma unica tentativa.
+`target.retry` pode ser usado em targets `http` e `sqs`. O runtime repete a tentativa quando o envio ao target falha. Para HTTP, respostas `5xx` tambem sao tratadas como falha transiente de target.
 
 ```yaml
 target:
@@ -374,7 +374,7 @@ pipeline:
 | `queue` | condicional | - | Nome ou URL da fila. Obrigatorio quando `queueUrl` nao existe. |
 | `queueUrl` | condicional | - | URL completa da fila. Se informada, e usada diretamente. |
 | `delaySeconds` | nao | AWS default | Delay aplicado ao envio da mensagem. |
-| `retry` | nao | sem retry | Schema configuravel para retry de envio ao target SQS. A execucao do retry ainda esta pendente. |
+| `retry` | nao | sem retry | Retry de envio ao target SQS quando `SendMessage` falhar. |
 
 ### Validate JSON Schema
 

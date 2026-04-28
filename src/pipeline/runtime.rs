@@ -16,8 +16,9 @@ use crate::{
     bridge::template::{render_to_string, render_value, TemplateContext},
     pipeline::{
         config::{
-            HttpCompletionRule, PipelineConfig, SourceConfig, SqsCompletionAction,
-            SqsCompletionRule, SqsDeadLetterConfig, TargetConfig, TransformConfig,
+            HttpCompletionRule, PipelineConfig, RetryBackoffConfig, SourceConfig,
+            SqsCompletionAction, SqsCompletionRule, SqsDeadLetterConfig, TargetConfig,
+            TargetRetryConfig, TransformConfig,
         },
         model::{
             CompletionResponse, MessageMetadata, Payload, PipelineFailure, PipelineMessage,
@@ -367,7 +368,7 @@ async fn run_target_worker(
             error.kind = tracing::field::Empty
         ));
         let target = async {
-            match send_to_target(&config.target, &resources, &message).await {
+            match send_to_target_with_retry(&config.target, &resources, &message).await {
                 Ok(response) => {
                     tracing::Span::current().record("target.status", response.status_code);
                     tracing::Span::current().record("result.status", "accepted");
@@ -704,6 +705,11 @@ async fn send_to_target(
                 .text()
                 .await
                 .context("failed to read http target response")?;
+            if status_code >= 500 {
+                return Err(anyhow!(
+                    "http target returned server error {status_code}: {body}"
+                ));
+            }
             Ok(TargetResponse {
                 target_type: "http",
                 status_code,
@@ -732,6 +738,91 @@ async fn send_to_target(
                 body: None,
                 message_id: response.message_id,
             })
+        }
+    }
+}
+
+async fn send_to_target_with_retry(
+    target: &TargetConfig,
+    resources: &PipelineResources,
+    message: &PipelineMessage,
+) -> Result<TargetResponse> {
+    let retry = target_retry_config(target);
+    let max_attempts = retry.map(|retry| retry.max_attempts).unwrap_or(1).max(1);
+    let mut last_error = None;
+
+    for attempt in 1..=max_attempts {
+        let span = message.trace.child_span(info_span!(
+            "postio.pipeline.target.attempt",
+            pipeline.id = %message.pipeline_id,
+            request.id = %message.id,
+            target.type = target.type_name(),
+            retry.attempt = attempt,
+            retry.max_attempts = max_attempts,
+            result.status = tracing::field::Empty,
+            error.kind = tracing::field::Empty
+        ));
+
+        let result = async {
+            match send_to_target(target, resources, message).await {
+                Ok(response) => {
+                    tracing::Span::current().record("result.status", "accepted");
+                    Ok(response)
+                }
+                Err(error) => {
+                    tracing::Span::current().record("result.status", "failed");
+                    tracing::Span::current().record("error.kind", "target_send_failed");
+                    Err(error)
+                }
+            }
+        }
+        .instrument(span)
+        .await;
+
+        match result {
+            Ok(response) => return Ok(response),
+            Err(error) if attempt < max_attempts => {
+                warn!(
+                    %error,
+                    pipeline.id = %message.pipeline_id,
+                    request.id = %message.id,
+                    target.type = target.type_name(),
+                    retry.attempt = attempt,
+                    retry.max_attempts = max_attempts,
+                    "target attempt failed; retrying"
+                );
+                last_error = Some(error);
+                if let Some(retry) = retry {
+                    tokio::time::sleep(retry_backoff_delay(retry, attempt)).await;
+                }
+            }
+            Err(error) => {
+                last_error = Some(error);
+                break;
+            }
+        }
+    }
+
+    let error = last_error.unwrap_or_else(|| anyhow!("target failed without attempts"));
+    Err(anyhow!(
+        "target failed after {max_attempts} attempt(s): {error}"
+    ))
+}
+
+fn target_retry_config(target: &TargetConfig) -> Option<&TargetRetryConfig> {
+    match target {
+        TargetConfig::Http(config) => config.retry.as_ref(),
+        TargetConfig::Sqs(config) => config.retry.as_ref(),
+    }
+}
+
+fn retry_backoff_delay(retry: &TargetRetryConfig, failed_attempt: u32) -> Duration {
+    match &retry.backoff {
+        RetryBackoffConfig::Fixed { delay_ms } => Duration::from_millis(*delay_ms),
+        RetryBackoffConfig::Exponential { initial_ms, max_ms } => {
+            let exponent = failed_attempt.saturating_sub(1).min(63);
+            let factor = 1_u64.checked_shl(exponent).unwrap_or(u64::MAX);
+            Duration::from_millis(initial_ms.saturating_mul(factor).min(*max_ms))
         }
     }
 }
