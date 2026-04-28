@@ -8,7 +8,9 @@ use axum::{
     routing::post,
     Json, Router,
 };
+use opentelemetry::{global, propagation::Extractor};
 use tracing::{info, info_span, Instrument};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::{
     bridge::config::BridgeConfig,
@@ -67,6 +69,7 @@ async fn handle_pipeline_http(
         response.status_code = tracing::field::Empty,
         pipeline.status = tracing::field::Empty,
     );
+    let _ = span.set_parent(extract_trace_context(&headers));
 
     async move {
         info!("pipeline http request received");
@@ -97,5 +100,21 @@ fn http_status_for_response(response: &CompletionResponse) -> StatusCode {
             .and_then(|status| StatusCode::from_u16(status).ok())
             .unwrap_or(StatusCode::OK),
         _ => StatusCode::ACCEPTED,
+    }
+}
+
+fn extract_trace_context(headers: &HeaderMap) -> opentelemetry::Context {
+    global::get_text_map_propagator(|propagator| propagator.extract(&HeaderExtractor(headers)))
+}
+
+struct HeaderExtractor<'a>(&'a HeaderMap);
+
+impl Extractor for HeaderExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|value| value.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(|key| key.as_str()).collect()
     }
 }
