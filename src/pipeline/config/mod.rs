@@ -1,0 +1,37 @@
+use serde::Deserialize;
+
+mod source;
+mod target;
+mod transform;
+
+pub use source::{HttpSourceConfig, SourceConfig, SqsSourceConfig};
+pub use target::{HttpTargetConfig, SqsTargetConfig, TargetConfig};
+pub use transform::{TemplateTransformConfig, TransformConfig, TransformTemplateOutput};
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineConfig {
+    pub id: String,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    pub source: SourceConfig,
+    #[serde(default)]
+    pub transform: Option<TransformConfig>,
+    pub target: TargetConfig,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+pub(super) fn default_method() -> String {
+    "POST".to_string()
+}
+
+pub(super) fn default_batch_size() -> i32 {
+    1
+}
+
+pub(super) fn default_wait_time_seconds() -> i32 {
+    10
+}

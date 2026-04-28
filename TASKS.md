@@ -129,6 +129,7 @@ Notas da primeira entrega:
 - `[x]` Explicitar que completion atual e implicito por source e que o schema generico ainda e planejado.
 - `[x]` Refatorar o schema de pipeline no codigo para structs individuais por resource/papel: `HttpSourceConfig`, `HttpTargetConfig`, `SqsSourceConfig`, `SqsTargetConfig` e `TemplateTransformConfig`.
 - `[x]` Manter compatibilidade do YAML/JSON existente apos a refatoracao dos schemas.
+- `[x]` Organizar os schemas de pipeline em `src/pipeline/config/`, separando `source.rs`, `target.rs` e `transform.rs`.
 
 ### Fechar Transform Template
 
