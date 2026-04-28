@@ -7,13 +7,16 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info_span, warn, Instrument};
 use uuid::Uuid;
 
-use crate::pipeline::{
-    config::{PipelineConfig, SourceConfig, TargetConfig},
-    model::{
-        CompletionResponse, MessageMetadata, Payload, PipelineMessage, PipelineResult,
-        SourceContext, TargetResponse, TraceContext,
+use crate::{
+    bridge::template::{render_to_string, render_value, TemplateContext},
+    pipeline::{
+        config::{PipelineConfig, SourceConfig, TargetConfig, TransformConfig},
+        model::{
+            CompletionResponse, MessageMetadata, Payload, PipelineMessage, PipelineResult,
+            SourceContext, TargetRequestOverrides, TargetResponse, TraceContext,
+        },
+        resources::PipelineResources,
     },
-    resources::PipelineResources,
 };
 
 const DEFAULT_CHANNEL_BUFFER: usize = 100;
@@ -36,7 +39,11 @@ impl PipelineRuntime {
 
         tokio::spawn(run_decode_worker(input_rx, validate_tx));
         tokio::spawn(run_validate_noop_worker(validate_rx, transform_tx));
-        tokio::spawn(run_transform_noop_worker(transform_rx, target_tx));
+        tokio::spawn(run_transform_worker(
+            transform_rx,
+            target_tx,
+            config.transform.clone(),
+        ));
         tokio::spawn(run_target_worker(
             target_rx,
             completion_tx,
@@ -82,6 +89,7 @@ impl PipelineRuntime {
                 content_type: header_value(&headers, "content-type"),
                 headers: headers_to_map(&headers),
             },
+            target: TargetRequestOverrides::default(),
             trace: TraceContext::current(),
             attempt: 1,
             reply: Some(reply_tx),
@@ -171,24 +179,78 @@ async fn run_validate_noop_worker(
     }
 }
 
-async fn run_transform_noop_worker(
+async fn run_transform_worker(
     mut rx: mpsc::Receiver<PipelineMessage>,
     tx: mpsc::Sender<PipelineMessage>,
+    transform: Option<TransformConfig>,
 ) {
-    while let Some(message) = rx.recv().await {
+    let engine = match transform.as_ref() {
+        Some(TransformConfig::Template { .. }) => "template",
+        None => "noop",
+    };
+    while let Some(mut message) = rx.recv().await {
         let span = message.trace.child_span(info_span!(
             "postio.pipeline.transform.request",
             pipeline.id = %message.pipeline_id,
             request.id = %message.id,
-            engine = "noop"
+            engine = engine
         ));
         async {
+            if let Some(transform) = transform.as_ref() {
+                apply_transform(transform, &mut message);
+            }
             if tx.send(message).await.is_err() {
                 warn!("pipeline target channel closed");
             }
         }
         .instrument(span)
         .await;
+    }
+}
+
+fn apply_transform(transform: &TransformConfig, message: &mut PipelineMessage) {
+    match transform {
+        TransformConfig::Template { output } => {
+            let ctx = template_context(message);
+            if let Some(body) = &output.body {
+                message.payload = Payload::from_template_value(render_value(body, &ctx));
+            }
+            if let Some(method) = &output.method {
+                message.target.method = Some(render_to_string(method, &ctx));
+            }
+            if let Some(url) = &output.url {
+                message.target.url = Some(render_to_string(url, &ctx));
+            }
+            if let Some(headers) = &output.headers {
+                message.target.headers = headers
+                    .iter()
+                    .map(|(key, value)| (key.clone(), render_to_string(value, &ctx)))
+                    .collect();
+            }
+            if let Some(delay_seconds) = output.delay_seconds {
+                message.target.delay_seconds = Some(delay_seconds);
+            }
+        }
+    }
+}
+
+fn template_context(message: &PipelineMessage) -> TemplateContext {
+    TemplateContext {
+        params: message.metadata.params.clone(),
+        query: message.metadata.query.clone(),
+        headers: message.metadata.headers.clone(),
+        form: BTreeMap::new(),
+        file: serde_json::Value::Null,
+        body: message.payload.to_template_value(),
+        context: BTreeMap::from([
+            ("requestId".to_string(), message.id.to_string()),
+            ("pipelineId".to_string(), message.pipeline_id.clone()),
+            ("attempt".to_string(), message.attempt.to_string()),
+            (
+                "sourceType".to_string(),
+                message.source.type_name().to_string(),
+            ),
+        ]),
     }
 }
 
@@ -313,6 +375,8 @@ async fn send_to_target(
             headers,
             timeout_ms,
         } => {
+            let method = message.target.method.as_ref().unwrap_or(method);
+            let url = message.target.url.as_ref().unwrap_or(url);
             let method = reqwest::Method::from_bytes(method.as_bytes())
                 .with_context(|| format!("invalid http target method {method}"))?;
             let mut request = resources
@@ -327,8 +391,17 @@ async fn send_to_target(
                     request = request.header(key, value);
                 }
             }
+            for (key, value) in &message.target.headers {
+                request = request.header(key, value);
+            }
             if let Some(content_type) = &message.metadata.content_type {
-                request = request.header("content-type", content_type);
+                let has_content_type = headers
+                    .as_ref()
+                    .is_some_and(|headers| contains_header(headers, "content-type"))
+                    || contains_header(&message.target.headers, "content-type");
+                if !has_content_type {
+                    request = request.header("content-type", content_type);
+                }
             }
             let response = request.send().await.context("failed to send http target")?;
             let status_code = response.status().as_u16();
@@ -348,6 +421,7 @@ async fn send_to_target(
             queue_url,
             delay_seconds,
         } => {
+            let delay_seconds = message.target.delay_seconds.or(*delay_seconds);
             let queue_url = resources
                 .resolve_queue_url(queue.as_deref(), queue_url.as_deref())
                 .await?;
@@ -356,7 +430,7 @@ async fn send_to_target(
                 .send_message()
                 .queue_url(queue_url)
                 .message_body(message.payload.to_string_body())
-                .set_delay_seconds(*delay_seconds)
+                .set_delay_seconds(delay_seconds)
                 .send()
                 .await
                 .context("failed to send sqs message")?;
@@ -430,6 +504,7 @@ async fn run_sqs_source(
                             message.body().unwrap_or_default().to_string(),
                         )),
                         metadata: MessageMetadata::default(),
+                        target: TargetRequestOverrides::default(),
                         trace: TraceContext::from_span(&receive_span),
                         attempt: 1,
                         reply: None,
@@ -473,4 +548,10 @@ fn header_value(headers: &HeaderMap, key: &str) -> Option<String> {
         .get(key)
         .and_then(|value| value.to_str().ok())
         .map(ToString::to_string)
+}
+
+fn contains_header(headers: &BTreeMap<String, String>, key: &str) -> bool {
+    headers
+        .keys()
+        .any(|header| header.eq_ignore_ascii_case(key))
 }

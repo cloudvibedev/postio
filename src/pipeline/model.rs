@@ -16,6 +16,7 @@ pub struct PipelineMessage {
     pub source: SourceContext,
     pub payload: Payload,
     pub metadata: MessageMetadata,
+    pub target: TargetRequestOverrides,
     pub trace: TraceContext,
     pub attempt: u32,
     pub reply: Option<oneshot::Sender<CompletionResponse>>,
@@ -74,12 +75,29 @@ pub enum SourceContext {
     },
 }
 
+impl SourceContext {
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            SourceContext::Http { .. } => "http",
+            SourceContext::Sqs { .. } => "sqs",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MessageMetadata {
     pub params: BTreeMap<String, String>,
     pub query: BTreeMap<String, String>,
     pub headers: BTreeMap<String, String>,
     pub content_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TargetRequestOverrides {
+    pub method: Option<String>,
+    pub url: Option<String>,
+    pub headers: BTreeMap<String, String>,
+    pub delay_seconds: Option<i32>,
 }
 
 #[derive(Debug)]
@@ -143,6 +161,22 @@ impl Payload {
             Payload::Json(value) => value.to_string(),
             Payload::Text(value) => value.clone(),
             Payload::Empty => String::new(),
+        }
+    }
+
+    pub fn to_template_value(&self) -> Value {
+        match self {
+            Payload::Raw(bytes) => String::from_utf8_lossy(bytes).into_owned().into(),
+            Payload::Json(value) => value.clone(),
+            Payload::Text(value) => Value::String(value.clone()),
+            Payload::Empty => Value::Null,
+        }
+    }
+
+    pub fn from_template_value(value: Value) -> Self {
+        match value {
+            Value::String(value) => Payload::Text(value),
+            value => Payload::Json(value),
         }
     }
 }

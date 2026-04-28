@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -24,14 +24,16 @@ use postio::{
     config::{otel_enabled_from_env, AppConfig, CorsConfig, DEFAULT_BODY_LIMIT_BYTES},
     libs::telemetry,
     pipeline::{
-        config::{PipelineConfig, SourceConfig, TargetConfig},
+        config::{
+            PipelineConfig, SourceConfig, TargetConfig, TransformConfig, TransformTemplateOutput,
+        },
         resources::PipelineResources,
         runtime::PipelineRuntime,
     },
     routes::create_router,
     state::AppState,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::sync::OnceCell;
 use tower::ServiceExt;
 use tracing::info_span;
@@ -392,6 +394,7 @@ async fn http_pipeline_sends_payload_to_http_target() {
                 method: "POST".to_string(),
                 path: "/pipe/{tenant}".to_string(),
             },
+            transform: None,
             target: TargetConfig::Http {
                 method: "POST".to_string(),
                 url: format!("http://{target_addr}/target"),
@@ -438,6 +441,7 @@ async fn http_pipeline_sends_payload_to_sqs_target() {
                 method: "POST".to_string(),
                 path: "/pipe".to_string(),
             },
+            transform: None,
             target: TargetConfig::Sqs {
                 queue: None,
                 queue_url: Some(sqs.queue_url("output")),
@@ -481,6 +485,134 @@ async fn http_pipeline_sends_payload_to_sqs_target() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_pipeline_template_transform_sends_payload_to_sqs_target() {
+    let sqs = MockSqs::spawn(vec![]).await;
+    let bridge_config = BridgeConfig {
+        routes: Vec::new(),
+        pipeline: Some(PipelineConfig {
+            id: "http-to-sqs-template".to_string(),
+            enabled: true,
+            source: SourceConfig::Http {
+                method: "POST".to_string(),
+                path: "/pipe/{tenant}".to_string(),
+            },
+            transform: Some(TransformConfig::Template {
+                output: TransformTemplateOutput {
+                    body: Some(json!({
+                        "event": "{{ body.event }}",
+                        "tenant": "{{ params.tenant }}",
+                        "source": "{{ query.source }}",
+                        "requestId": "{{ context.requestId }}",
+                        "original": "{{ body }}"
+                    })),
+                    ..TransformTemplateOutput::default()
+                },
+            }),
+            target: TargetConfig::Sqs {
+                queue: None,
+                queue_url: Some(sqs.queue_url("output")),
+                delay_seconds: None,
+            },
+        }),
+    };
+    let router = setup_router_with_sqs_client(
+        bridge_config,
+        Arc::new(NoopDispatcher),
+        test_sqs_client_for(sqs.endpoint_url()),
+    )
+    .await;
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/pipe/acme?source=test")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"event":"order.created","total":42}"#))
+                .expect("build request"),
+        )
+        .await
+        .expect("request failed");
+
+    let status = response.status();
+    let body = response_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["status"], "accepted");
+    let sent = sqs.sent_messages().await;
+    assert_eq!(sent.len(), 1);
+    let transformed: Value = serde_json::from_str(&sent[0].body).expect("sqs body should be json");
+    assert_eq!(transformed["event"], "order.created");
+    assert_eq!(transformed["tenant"], "acme");
+    assert_eq!(transformed["source"], "test");
+    assert_eq!(transformed["original"]["total"], 42);
+    assert!(transformed["requestId"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_pipeline_template_transform_sends_payload_and_headers_to_http_target() {
+    let captured = Arc::new(tokio::sync::Mutex::new(Vec::<CapturedHttpRequest>::new()));
+    let target_addr = spawn_http_target_with_headers(captured.clone()).await;
+
+    let bridge_config = BridgeConfig {
+        routes: Vec::new(),
+        pipeline: Some(PipelineConfig {
+            id: "http-to-http-template".to_string(),
+            enabled: true,
+            source: SourceConfig::Http {
+                method: "POST".to_string(),
+                path: "/pipe".to_string(),
+            },
+            transform: Some(TransformConfig::Template {
+                output: TransformTemplateOutput {
+                    headers: Some(BTreeMap::from([(
+                        "x-postio-event".to_string(),
+                        "{{ body.event }}".to_string(),
+                    )])),
+                    body: Some(json!({
+                        "event": "{{ body.event }}",
+                        "source": "{{ headers.x-source }}"
+                    })),
+                    ..TransformTemplateOutput::default()
+                },
+            }),
+            target: TargetConfig::Http {
+                method: "POST".to_string(),
+                url: format!("http://{target_addr}/target"),
+                headers: None,
+                timeout_ms: Some(1000),
+            },
+        }),
+    };
+    let router = setup_router_with_bridge_config(bridge_config, Arc::new(NoopDispatcher)).await;
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/pipe")
+                .header("content-type", "application/json")
+                .header("x-source", "integration")
+                .body(Body::from(r#"{"event":"invoice.paid"}"#))
+                .expect("build request"),
+        )
+        .await
+        .expect("request failed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let captured = captured.lock().await;
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].header.as_deref(), Some("invoice.paid"));
+    assert_eq!(
+        captured[0].body,
+        r#"{"event":"invoice.paid","source":"integration"}"#
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn http_pipeline_reports_failed_http_target() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -497,6 +629,7 @@ async fn http_pipeline_reports_failed_http_target() {
                 method: "POST".to_string(),
                 path: "/pipe".to_string(),
             },
+            transform: None,
             target: TargetConfig::Http {
                 method: "POST".to_string(),
                 url: format!("http://{target_addr}/target"),
@@ -555,6 +688,7 @@ async fn sqs_pipeline_sends_payload_to_http_target_and_deletes_source_message() 
                 wait_time_seconds: 0,
                 visibility_timeout_seconds: Some(5),
             },
+            transform: None,
             target: TargetConfig::Http {
                 method: "POST".to_string(),
                 url: format!("http://{target_addr}/target"),
@@ -608,6 +742,7 @@ async fn sqs_pipeline_sends_payload_to_sqs_target_and_deletes_source_message() {
                 wait_time_seconds: 0,
                 visibility_timeout_seconds: None,
             },
+            transform: None,
             target: TargetConfig::Sqs {
                 queue: None,
                 queue_url: Some(sqs.queue_url("output")),
@@ -664,6 +799,45 @@ async fn capture_pipeline_target(
     body: String,
 ) -> Json<Value> {
     captured.lock().await.push(body);
+    Json(serde_json::json!({ "received": true }))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CapturedHttpRequest {
+    body: String,
+    header: Option<String>,
+}
+
+async fn spawn_http_target_with_headers(
+    captured: Arc<tokio::sync::Mutex<Vec<CapturedHttpRequest>>>,
+) -> SocketAddr {
+    let target_app = Router::new()
+        .route("/target", post(capture_pipeline_target_with_headers))
+        .with_state(captured);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind target server");
+    let target_addr = listener.local_addr().expect("target addr");
+    tokio::spawn(async move {
+        axum::serve(listener, target_app)
+            .await
+            .expect("target server failed");
+    });
+    target_addr
+}
+
+async fn capture_pipeline_target_with_headers(
+    AxumState(captured): AxumState<Arc<tokio::sync::Mutex<Vec<CapturedHttpRequest>>>>,
+    headers: HeaderMap,
+    body: String,
+) -> Json<Value> {
+    captured.lock().await.push(CapturedHttpRequest {
+        body,
+        header: headers
+            .get("x-postio-event")
+            .and_then(|value| value.to_str().ok())
+            .map(ToString::to_string),
+    });
     Json(serde_json::json!({ "received": true }))
 }
 

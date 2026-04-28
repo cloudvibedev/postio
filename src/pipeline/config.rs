@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
+use serde_json::Value;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -9,7 +10,28 @@ pub struct PipelineConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     pub source: SourceConfig,
+    #[serde(default)]
+    pub transform: Option<TransformConfig>,
     pub target: TargetConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "engine", rename_all = "camelCase")]
+pub enum TransformConfig {
+    #[serde(rename_all = "camelCase")]
+    Template { output: TransformTemplateOutput },
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransformTemplateOutput {
+    pub method: Option<String>,
+    pub url: Option<String>,
+    pub headers: Option<BTreeMap<String, String>>,
+    pub query: Option<BTreeMap<String, Value>>,
+    pub body: Option<Value>,
+    pub delay_seconds: Option<i32>,
+    pub attributes: Option<BTreeMap<String, Value>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

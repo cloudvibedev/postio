@@ -4,7 +4,7 @@ Postio e uma API de injestao de dados configuravel. Ela recebe chamadas HTTP `PO
 
 O objetivo da v0 e ser simples de operar: uma aplicacao, um arquivo YAML/JSON, varias rotas, varios destinos.
 
-A evolucao v1 adiciona um modo de pipeline unica por processo. Nessa primeira implementacao, a pipeline suporta entradas e saidas `http` e `sqs`, com etapas internas de decode, validate noop, transform noop, target e completion.
+A evolucao v1 adiciona um modo de pipeline unica por processo. Nessa primeira implementacao, a pipeline suporta entradas e saidas `http` e `sqs`, com etapas internas de decode, validate noop, transform template opcional, target e completion.
 
 ## Sumario
 
@@ -75,7 +75,7 @@ O bloco `pipeline` executa uma unica pipeline por processo/deployment Postio. El
 Fluxo interno atual:
 
 ```text
-source -> decode -> validate(noop) -> transform(noop) -> target -> completion
+source -> decode -> validate(noop) -> transform(noop/template) -> target -> completion
 ```
 
 Escopo implementado nesta versao:
@@ -85,7 +85,7 @@ Escopo implementado nesta versao:
 - Target `http`: envia o payload para um endpoint externo.
 - Target `sqs`: envia o payload para uma fila SQS.
 - Validate: sempre retorna valido.
-- Transform: retorna o payload original.
+- Transform: retorna o payload original quando ausente; quando configurado com `engine: template`, pode montar um novo body e headers de saida.
 
 ### Schema raiz
 
@@ -97,6 +97,12 @@ pipeline:
     type: http
     method: POST
     path: /orders
+  transform:
+    engine: template
+    output:
+      body:
+        id: "{{ body.id }}"
+        tenant: "{{ params.tenant }}"
   target:
     type: sqs
     queue: orders-output
@@ -107,6 +113,7 @@ pipeline:
 | `id` | sim | - | Identificador da pipeline. Aparece em logs, spans e respostas. |
 | `enabled` | nao | `true` | Liga ou desliga a pipeline. |
 | `source` | sim | - | Entrada da pipeline. Nesta fase pode ser `http` ou `sqs`. |
+| `transform` | nao | noop | Transformacao opcional antes do target. Nesta fase suporta `engine: template`. |
 | `target` | sim | - | Saida da pipeline. Nesta fase pode ser `http` ou `sqs`. |
 
 ### Source HTTP
@@ -201,6 +208,91 @@ pipeline:
 | `queue` | condicional | - | Nome ou URL da fila. Obrigatorio quando `queueUrl` nao existe. |
 | `queueUrl` | condicional | - | URL completa da fila. Se informada, e usada diretamente. |
 | `delaySeconds` | nao | AWS default | Delay aplicado ao envio da mensagem. |
+
+### Transform Template
+
+O transform `template` monta uma nova requisicao de saida antes do target. Quando `transform` nao existe, a pipeline continua em modo noop e envia o payload original.
+
+```yaml
+pipeline:
+  id: http-to-sqs-template
+  source:
+    type: http
+    method: POST
+    path: /tenants/{tenant}/orders
+  transform:
+    engine: template
+    output:
+      body:
+        event: order.received
+        tenant: "{{ params.tenant }}"
+        source: "{{ query.source }}"
+        requestId: "{{ context.requestId }}"
+        original: "{{ body }}"
+  target:
+    type: sqs
+    queue: orders-output
+```
+
+Campos de `transform`:
+
+| Propriedade | Obrigatoria | Padrao | Descricao |
+| --- | --- | --- | --- |
+| `engine` | sim | - | Deve ser `template`. |
+| `output` | sim | - | Objeto com os overrides produzidos pela transformacao. |
+
+Campos de `transform.output`:
+
+| Propriedade | Obrigatoria | Suporte atual | Descricao |
+| --- | --- | --- | --- |
+| `body` | nao | sim | Novo payload enviado ao target. Pode ser string, objeto, array, numero, booleano ou `null`. |
+| `headers` | nao | sim para target HTTP | Headers dinamicos enviados ao target HTTP. Sobrescrevem headers fixos de mesmo nome. |
+| `method` | nao | sim para target HTTP | Metodo dinamico do target HTTP. |
+| `url` | nao | sim para target HTTP | URL dinamica do target HTTP. |
+| `delaySeconds` | nao | sim para target SQS | Delay dinamico usado no envio SQS. |
+| `query` | nao | reservado | Planejado para montar query string do target HTTP. |
+| `attributes` | nao | reservado | Planejado para atributos SQS. |
+
+Contexto disponivel no template:
+
+| Raiz | Descricao |
+| --- | --- |
+| `body` | Payload decodificado. JSON continua navegavel, por exemplo `{{ body.order.id }}`. |
+| `headers` | Headers recebidos da fonte HTTP. |
+| `params` | Params extraidos do path HTTP, como `{tenant}`. |
+| `query` | Query string recebida pela fonte HTTP. |
+| `context.requestId` | ID da mensagem na pipeline. |
+| `context.pipelineId` | ID da pipeline. |
+| `context.attempt` | Tentativa atual. |
+| `context.sourceType` | Tipo da fonte, como `http` ou `sqs`. |
+
+Regras de renderizacao:
+
+- Quando a string inteira e um template, o tipo JSON e preservado quando possivel. Exemplo: `original: "{{ body }}"` vira o objeto original.
+- Quando o template esta dentro de outra string, o resultado e string. Exemplo: `"order-{{ body.id }}"`.
+- Se uma expressao nao existe, o valor vira `null` em template inteiro ou string vazia em template parcial.
+
+Exemplo com target HTTP e header dinamico:
+
+```yaml
+pipeline:
+  id: http-to-http-template
+  source:
+    type: http
+    path: /events
+  transform:
+    engine: template
+    output:
+      headers:
+        x-postio-event: "{{ body.event }}"
+      body:
+        event: "{{ body.event }}"
+        source: "{{ headers.x-source }}"
+  target:
+    type: http
+    method: POST
+    url: https://example.com/events
+```
 
 ### Exemplos de pipeline
 

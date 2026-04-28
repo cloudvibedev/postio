@@ -254,6 +254,43 @@ pipeline:
     }
 
     #[test]
+    fn parses_pipeline_template_transform() {
+        let config: BridgeConfig = serde_yaml::from_str(
+            r#"
+pipeline:
+  id: http-to-sqs
+  source:
+    type: http
+    path: /orders/{tenant}
+  transform:
+    engine: template
+    output:
+      headers:
+        x-event-type: "{{ body.type }}"
+      body:
+        tenant: "{{ params.tenant }}"
+        payload: "{{ body }}"
+      delaySeconds: 2
+  target:
+    type: sqs
+    queue: orders-output
+"#,
+        )
+        .expect("config parses");
+
+        let config = validate_config(config).expect("config is valid");
+        let pipeline = config.pipeline.expect("pipeline");
+        let transform = pipeline.transform.expect("transform");
+        let crate::pipeline::config::TransformConfig::Template { output } = transform;
+        assert_eq!(
+            output.headers.expect("headers")["x-event-type"],
+            "{{ body.type }}"
+        );
+        assert_eq!(output.delay_seconds, Some(2));
+        assert!(output.body.expect("body").is_object());
+    }
+
+    #[test]
     fn rejects_pipeline_http_path_conflict() {
         let config: BridgeConfig = serde_yaml::from_str(
             r#"

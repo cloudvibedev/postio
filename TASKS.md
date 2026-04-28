@@ -90,22 +90,27 @@ Evidencia do caminho de erro:
 
 - `[x]` Revisar no `PLAN-PIPELINES.md` o escopo da primeira transformacao.
 - `[x]` Definir se a proxima implementacao sera `transform.engine: template`.
-- `[ ]` Definir schema minimo do `transform.engine: template`.
-- `[ ]` Definir `transform.output.body`.
-- `[ ]` Definir `transform.output.headers`.
-- `[ ]` Definir `transform.output.query`.
-- `[ ]` Definir `transform.output.method`.
-- `[ ]` Definir `transform.output.url`.
-- `[ ]` Definir `transform.output.delaySeconds`.
-- `[ ]` Definir `transform.output.attributes`.
-- `[ ]` Implementar `HTTP -> SQS` com `transform.output.body`.
-- `[ ]` Implementar acesso no template a `body`, `headers`, `params`, `query` e `context`.
-- `[ ]` Manter fallback noop quando `transform` nao existir.
-- `[ ]` Criar teste `HTTP -> SQS` transformando payload.
-- `[ ]` Criar teste `HTTP -> HTTP` transformando body/header.
-- `[ ]` Criar teste garantindo que pipelines sem `transform` continuam funcionando.
-- `[ ]` Criar exemplos de `HTTP -> SQS` com transform template.
+- `[x]` Definir schema minimo do `transform.engine: template`.
+- `[x]` Definir `transform.output.body`.
+- `[x]` Definir `transform.output.headers`.
+- `[x]` Definir `transform.output.query`.
+- `[x]` Definir `transform.output.method`.
+- `[x]` Definir `transform.output.url`.
+- `[x]` Definir `transform.output.delaySeconds`.
+- `[x]` Definir `transform.output.attributes`.
+- `[x]` Implementar `HTTP -> SQS` com `transform.output.body`.
+- `[x]` Implementar acesso no template a `body`, `headers`, `params`, `query` e `context`.
+- `[x]` Manter fallback noop quando `transform` nao existir.
+- `[x]` Criar teste `HTTP -> SQS` transformando payload.
+- `[x]` Criar teste `HTTP -> HTTP` transformando body/header.
+- `[x]` Criar teste garantindo que pipelines sem `transform` continuam funcionando.
+- `[x]` Criar exemplos de `HTTP -> SQS` com transform template.
 - `[ ]` Criar exemplos de `SQS -> HTTP` com transform template.
+
+Notas da primeira entrega:
+
+- `transform.output.body`, `headers`, `method`, `url` e `delaySeconds` ja sao aplicados no runtime.
+- `transform.output.query` e `attributes` ja fazem parte do schema, mas ainda estao reservados para implementacao de target request completo.
 
 ## Rotas Temporarias De Validacao
 
