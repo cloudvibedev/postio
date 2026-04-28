@@ -4,10 +4,13 @@ Postio e uma API de injestao de dados configuravel. Ela recebe chamadas HTTP `PO
 
 O objetivo da v0 e ser simples de operar: uma aplicacao, um arquivo YAML/JSON, varias rotas, varios destinos.
 
+A evolucao v1 adiciona um modo de pipeline unica por processo. Nessa primeira implementacao, a pipeline suporta entradas e saidas `http` e `sqs`, com etapas internas de decode, validate noop, transform noop, target e completion.
+
 ## Sumario
 
 - [Visao geral](#visao-geral)
 - [Recursos da v0](#recursos-da-v0)
+- [Pipeline v1 experimental](#pipeline-v1-experimental)
 - [Instalacao](#instalacao)
 - [Executando localmente](#executando-localmente)
 - [Configuracao da aplicacao](#configuracao-da-aplicacao)
@@ -64,6 +67,182 @@ Cada rota recebe o request, monta um contexto com `params`, `query`, `headers`, 
 - `/health` para liveness.
 - `/docs` com Swagger UI e `/openapi.json`.
 - `/echo` para debug de requests.
+
+## Pipeline v1 experimental
+
+O bloco `pipeline` executa uma unica pipeline por processo/deployment Postio. Ele pode coexistir no arquivo com `routes[]`, mas a recomendacao para a v1 e configurar um deployment por pipeline para manter isolamento operacional, escala e troubleshooting simples.
+
+Fluxo interno atual:
+
+```text
+source -> decode -> validate(noop) -> transform(noop) -> target -> completion
+```
+
+Escopo implementado nesta versao:
+
+- Source `http`: registra uma rota `POST` e envia o payload para a pipeline.
+- Source `sqs`: faz polling da fila, envia cada mensagem para a pipeline e remove a mensagem apos sucesso no target.
+- Target `http`: envia o payload para um endpoint externo.
+- Target `sqs`: envia o payload para uma fila SQS.
+- Validate: sempre retorna valido.
+- Transform: retorna o payload original.
+
+### Schema raiz
+
+```yaml
+pipeline:
+  id: http-to-sqs-orders
+  enabled: true
+  source:
+    type: http
+    method: POST
+    path: /orders
+  target:
+    type: sqs
+    queue: orders-output
+```
+
+| Propriedade | Obrigatoria | Padrao | Descricao |
+| --- | --- | --- | --- |
+| `id` | sim | - | Identificador da pipeline. Aparece em logs, spans e respostas. |
+| `enabled` | nao | `true` | Liga ou desliga a pipeline. |
+| `source` | sim | - | Entrada da pipeline. Nesta fase pode ser `http` ou `sqs`. |
+| `target` | sim | - | Saida da pipeline. Nesta fase pode ser `http` ou `sqs`. |
+
+### Source HTTP
+
+```yaml
+pipeline:
+  id: http-to-http
+  source:
+    type: http
+    method: POST
+    path: /ingest/{tenant}
+  target:
+    type: http
+    method: POST
+    url: https://example.com/events
+```
+
+| Propriedade | Obrigatoria | Padrao | Descricao |
+| --- | --- | --- | --- |
+| `type` | sim | - | Deve ser `http`. |
+| `method` | nao | `POST` | Metodo aceito. Nesta fase apenas `POST` e registrado. |
+| `path` | sim | - | Rota HTTP da pipeline. Deve iniciar com `/` e pode usar params como `{tenant}`. |
+
+### Source SQS
+
+```yaml
+pipeline:
+  id: sqs-to-http
+  source:
+    type: sqs
+    queue: orders-input
+    batchSize: 10
+    waitTimeSeconds: 10
+    visibilityTimeoutSeconds: 30
+  target:
+    type: http
+    method: POST
+    url: https://example.com/orders
+```
+
+| Propriedade | Obrigatoria | Padrao | Descricao |
+| --- | --- | --- | --- |
+| `type` | sim | - | Deve ser `sqs`. |
+| `queue` | condicional | - | Nome ou URL da fila. Obrigatorio quando `queueUrl` nao existe. |
+| `queueUrl` | condicional | - | URL completa da fila. Se informada, e usada diretamente. |
+| `batchSize` | nao | `1` | Quantidade maxima de mensagens por polling. |
+| `waitTimeSeconds` | nao | `10` | Long polling em segundos. |
+| `visibilityTimeoutSeconds` | nao | AWS default | Visibility timeout aplicado ao receive. |
+
+### Target HTTP
+
+```yaml
+pipeline:
+  id: sqs-to-http
+  source:
+    type: sqs
+    queue: orders-input
+  target:
+    type: http
+    method: POST
+    url: https://example.com/orders
+    timeoutMs: 5000
+    headers:
+      x-source: postio
+```
+
+| Propriedade | Obrigatoria | Padrao | Descricao |
+| --- | --- | --- | --- |
+| `type` | sim | - | Deve ser `http`. |
+| `method` | nao | `POST` | Metodo usado na chamada para o target. |
+| `url` | sim | - | Endpoint destino. |
+| `headers` | nao | - | Headers fixos enviados ao target. |
+| `timeoutMs` | nao | sem timeout por request | Timeout da chamada HTTP em milissegundos. |
+
+### Target SQS
+
+```yaml
+pipeline:
+  id: http-to-sqs
+  source:
+    type: http
+    path: /orders
+  target:
+    type: sqs
+    queue: orders-output
+    delaySeconds: 5
+```
+
+| Propriedade | Obrigatoria | Padrao | Descricao |
+| --- | --- | --- | --- |
+| `type` | sim | - | Deve ser `sqs`. |
+| `queue` | condicional | - | Nome ou URL da fila. Obrigatorio quando `queueUrl` nao existe. |
+| `queueUrl` | condicional | - | URL completa da fila. Se informada, e usada diretamente. |
+| `delaySeconds` | nao | AWS default | Delay aplicado ao envio da mensagem. |
+
+### Exemplos de pipeline
+
+HTTP para SQS:
+
+```yaml
+pipeline:
+  id: http-to-sqs-orders
+  source:
+    type: http
+    method: POST
+    path: /orders
+  target:
+    type: sqs
+    queue: orders-output
+```
+
+Chamada:
+
+```bash
+curl -X POST http://127.0.0.1:8080/orders \
+  -H 'content-type: application/json' \
+  -d '{"id":"ord-1","total":99.9}'
+```
+
+SQS para HTTP:
+
+```yaml
+pipeline:
+  id: sqs-to-http-orders
+  source:
+    type: sqs
+    queue: orders-input
+    batchSize: 10
+    waitTimeSeconds: 10
+    visibilityTimeoutSeconds: 30
+  target:
+    type: http
+    method: POST
+    url: https://api.example.com/orders
+    timeoutMs: 5000
+```
 
 ## Instalacao
 

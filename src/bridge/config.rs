@@ -4,10 +4,14 @@ use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::pipeline::config::{PipelineConfig, SourceConfig, TargetConfig};
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeConfig {
+    #[serde(default)]
     pub routes: Vec<RouteConfig>,
+    pub pipeline: Option<PipelineConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -97,11 +101,103 @@ fn validate_config(config: BridgeConfig) -> Result<BridgeConfig> {
             _ => {}
         }
     }
+    if let Some(pipeline) = &config.pipeline {
+        validate_pipeline(pipeline)?;
+        validate_pipeline_route_conflicts(&config.routes, pipeline)?;
+    }
     Ok(config)
 }
 
 fn default_method() -> String {
     "POST".to_string()
+}
+
+fn validate_pipeline(pipeline: &PipelineConfig) -> Result<()> {
+    if pipeline.id.trim().is_empty() {
+        return Err(anyhow!("pipeline id cannot be empty"));
+    }
+    if !pipeline.enabled {
+        return Ok(());
+    }
+
+    match &pipeline.source {
+        SourceConfig::Http { method, path } => {
+            if !method.eq_ignore_ascii_case("POST") {
+                return Err(anyhow!(
+                    "pipeline {} http source supports only POST for now",
+                    pipeline.id
+                ));
+            }
+            if path.trim().is_empty() || !path.starts_with('/') {
+                return Err(anyhow!(
+                    "pipeline {} http source path must start with /",
+                    pipeline.id
+                ));
+            }
+        }
+        SourceConfig::Sqs {
+            queue, queue_url, ..
+        } if queue.is_none() && queue_url.is_none() => {
+            return Err(anyhow!(
+                "pipeline {} sqs source requires queue or queueUrl",
+                pipeline.id
+            ));
+        }
+        _ => {}
+    }
+
+    match &pipeline.target {
+        TargetConfig::Http { method, url, .. } => {
+            if method.trim().is_empty() {
+                return Err(anyhow!(
+                    "pipeline {} http target method cannot be empty",
+                    pipeline.id
+                ));
+            }
+            if url.trim().is_empty() {
+                return Err(anyhow!(
+                    "pipeline {} http target url cannot be empty",
+                    pipeline.id
+                ));
+            }
+        }
+        TargetConfig::Sqs {
+            queue, queue_url, ..
+        } if queue.is_none() && queue_url.is_none() => {
+            return Err(anyhow!(
+                "pipeline {} sqs target requires queue or queueUrl",
+                pipeline.id
+            ));
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn validate_pipeline_route_conflicts(
+    routes: &[RouteConfig],
+    pipeline: &PipelineConfig,
+) -> Result<()> {
+    let SourceConfig::Http { method, path } = &pipeline.source else {
+        return Ok(());
+    };
+    if !pipeline.enabled || !method.eq_ignore_ascii_case("POST") {
+        return Ok(());
+    }
+
+    if let Some(route) = routes
+        .iter()
+        .find(|route| route.method.eq_ignore_ascii_case("POST") && route.path == *path)
+    {
+        return Err(anyhow!(
+            "pipeline {} http source path conflicts with route {}",
+            pipeline.id,
+            route.id
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -129,6 +225,61 @@ routes:
         .expect("config parses");
 
         assert_eq!(config.routes.len(), 2);
+        assert!(config.pipeline.is_none());
+    }
+
+    #[test]
+    fn parses_single_pipeline() {
+        let config: BridgeConfig = serde_yaml::from_str(
+            r#"
+pipeline:
+  id: http-to-sqs
+  source:
+    type: http
+    method: POST
+    path: /orders
+  target:
+    type: sqs
+    queue: orders-output
+"#,
+        )
+        .expect("config parses");
+
+        let config = validate_config(config).expect("config is valid");
+        assert_eq!(config.routes.len(), 0);
+        let pipeline = config.pipeline.expect("pipeline");
+        assert_eq!(pipeline.id, "http-to-sqs");
+        assert_eq!(pipeline.source.type_name(), "http");
+        assert_eq!(pipeline.target.type_name(), "sqs");
+    }
+
+    #[test]
+    fn rejects_pipeline_http_path_conflict() {
+        let config: BridgeConfig = serde_yaml::from_str(
+            r#"
+routes:
+  - id: legacy
+    path: /orders
+    sink:
+      type: sqs
+      queue: legacy-orders
+pipeline:
+  id: http-to-sqs
+  source:
+    type: http
+    path: /orders
+  target:
+    type: sqs
+    queue: orders-output
+"#,
+        )
+        .expect("config parses");
+
+        let error = validate_config(config).expect_err("conflict is rejected");
+        assert!(
+            error.to_string().contains("conflicts with route legacy"),
+            "{error}"
+        );
     }
 
     #[test]

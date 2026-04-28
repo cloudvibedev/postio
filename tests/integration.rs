@@ -1,11 +1,17 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
 
+use aws_sdk_sqs::{
+    config::{Credentials, Region},
+    Client as SqsClient,
+};
 use axum::{
     body::Body,
+    extract::State as AxumState,
     http::{Method, Request, StatusCode},
     response::Response,
-    Router,
+    routing::post,
+    Json, Router,
 };
 use http_body_util::BodyExt;
 use postio::{
@@ -15,6 +21,11 @@ use postio::{
     },
     config::{otel_enabled_from_env, AppConfig, CorsConfig, DEFAULT_BODY_LIMIT_BYTES},
     libs::telemetry,
+    pipeline::{
+        config::{PipelineConfig, SourceConfig, TargetConfig},
+        resources::PipelineResources,
+        runtime::PipelineRuntime,
+    },
     routes::create_router,
     state::AppState,
 };
@@ -25,7 +36,10 @@ use tracing::info_span;
 
 async fn setup_router() -> Router {
     setup_router_with_bridge_config(
-        BridgeConfig { routes: Vec::new() },
+        BridgeConfig {
+            routes: Vec::new(),
+            pipeline: None,
+        },
         Arc::new(NoopDispatcher),
     )
     .await
@@ -36,7 +50,20 @@ async fn setup_router_with_bridge_config(
     dispatcher: Arc<dyn SinkDispatcher>,
 ) -> Router {
     init_telemetry().await;
-    let state = AppState::new(dispatcher);
+    let state = match bridge_config
+        .pipeline
+        .clone()
+        .filter(|pipeline| pipeline.enabled)
+    {
+        Some(pipeline) => AppState::with_pipeline(
+            dispatcher,
+            PipelineRuntime::spawn(
+                pipeline,
+                PipelineResources::new(test_sqs_client(), reqwest::Client::new()),
+            ),
+        ),
+        None => AppState::new(dispatcher),
+    };
     let config = AppConfig {
         host: IpAddr::V4(Ipv4Addr::LOCALHOST),
         port: 0,
@@ -47,6 +74,16 @@ async fn setup_router_with_bridge_config(
     };
 
     create_router(state, &config, &bridge_config)
+}
+
+fn test_sqs_client() -> SqsClient {
+    let config = aws_sdk_sqs::Config::builder()
+        .behavior_version_latest()
+        .region(Region::new("us-east-1"))
+        .credentials_provider(Credentials::for_tests())
+        .endpoint_url("http://127.0.0.1:4566")
+        .build();
+    SqsClient::from_conf(config)
 }
 
 static TELEMETRY_GUARD: OnceCell<telemetry::TelemetryGuard> = OnceCell::const_new();
@@ -228,6 +265,7 @@ async fn configured_ingest_route_dispatches_to_sink() {
                 attributes: None,
             },
         }],
+        pipeline: None,
     };
     let router = setup_router_with_bridge_config(bridge_config, dispatcher.clone()).await;
 
@@ -270,6 +308,7 @@ async fn multipart_ingest_route_extracts_form_fields_and_file() {
                 metadata: None,
             },
         }],
+        pipeline: None,
     };
     let router = setup_router_with_bridge_config(bridge_config, dispatcher.clone()).await;
     let boundary = "postio-test-boundary";
@@ -316,6 +355,73 @@ async fn multipart_ingest_route_extracts_form_fields_and_file() {
     assert_eq!(file.file_name.as_deref(), Some("hello.txt"));
     assert_eq!(file.content_type.as_deref(), Some("text/plain"));
     assert_eq!(file.bytes.as_ref(), b"hello from multipart");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_pipeline_sends_payload_to_http_target() {
+    let captured = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let target_app = Router::new()
+        .route("/target", post(capture_pipeline_target))
+        .with_state(captured.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind target server");
+    let target_addr = listener.local_addr().expect("target addr");
+    tokio::spawn(async move {
+        axum::serve(listener, target_app)
+            .await
+            .expect("target server failed");
+    });
+
+    let bridge_config = BridgeConfig {
+        routes: Vec::new(),
+        pipeline: Some(PipelineConfig {
+            id: "http-to-http".to_string(),
+            enabled: true,
+            source: SourceConfig::Http {
+                method: "POST".to_string(),
+                path: "/pipe/{tenant}".to_string(),
+            },
+            target: TargetConfig::Http {
+                method: "POST".to_string(),
+                url: format!("http://{target_addr}/target"),
+                headers: None,
+                timeout_ms: Some(1000),
+            },
+        }),
+    };
+    let router = setup_router_with_bridge_config(bridge_config, Arc::new(NoopDispatcher)).await;
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/pipe/acme?source=test")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"hello":"pipeline"}"#))
+                .expect("build request"),
+        )
+        .await
+        .expect("request failed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["pipelineId"], "http-to-http");
+    assert_eq!(body["status"], "accepted");
+    assert_eq!(body["targetType"], "http");
+    assert_eq!(body["targetStatusCode"], 200);
+    assert_eq!(body["body"], r#"{"received":true}"#);
+    let captured = captured.lock().await;
+    assert_eq!(captured.as_slice(), [r#"{"hello":"pipeline"}"#]);
+}
+
+async fn capture_pipeline_target(
+    AxumState(captured): AxumState<Arc<tokio::sync::Mutex<Vec<String>>>>,
+    body: String,
+) -> Json<Value> {
+    captured.lock().await.push(body);
+    Json(serde_json::json!({ "received": true }))
 }
 
 struct NoopDispatcher;

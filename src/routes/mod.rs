@@ -8,6 +8,7 @@ use crate::{bridge::config::BridgeConfig, config::AppConfig, state::AppState};
 
 mod cors;
 pub mod ingest;
+pub mod pipeline;
 pub mod system;
 
 #[derive(OpenApi)]
@@ -36,7 +37,9 @@ pub fn create_router(state: AppState, config: &AppConfig, bridge_config: &Bridge
         api_router
     };
 
-    let api_router = api_router.merge(ingest::router(bridge_config));
+    let api_router = api_router
+        .merge(ingest::router(bridge_config))
+        .merge(pipeline::router(bridge_config));
 
     let api_router = api_router
         .layer(cors::build_cors_layer(&config.cors, None))

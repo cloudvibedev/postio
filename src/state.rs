@@ -1,19 +1,34 @@
 use std::sync::Arc;
 
-use crate::bridge::dispatcher::SinkDispatcher;
+use crate::{bridge::dispatcher::SinkDispatcher, pipeline::runtime::PipelineRuntime};
 
 #[derive(Clone)]
 pub struct AppState {
     dispatcher: Arc<dyn SinkDispatcher>,
+    pipeline: Option<PipelineRuntime>,
 }
 
 impl AppState {
     pub fn new(dispatcher: Arc<dyn SinkDispatcher>) -> Self {
-        Self { dispatcher }
+        Self {
+            dispatcher,
+            pipeline: None,
+        }
+    }
+
+    pub fn with_pipeline(dispatcher: Arc<dyn SinkDispatcher>, pipeline: PipelineRuntime) -> Self {
+        Self {
+            dispatcher,
+            pipeline: Some(pipeline),
+        }
     }
 
     pub fn dispatcher(&self) -> Arc<dyn SinkDispatcher> {
         Arc::clone(&self.dispatcher)
+    }
+
+    pub fn pipeline(&self) -> Option<PipelineRuntime> {
+        self.pipeline.clone()
     }
 }
 
