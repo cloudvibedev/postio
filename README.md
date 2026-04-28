@@ -11,6 +11,7 @@ A evolucao v1 adiciona um modo de pipeline unica por processo. Nessa primeira im
 - [Visao geral](#visao-geral)
 - [Recursos da v0](#recursos-da-v0)
 - [Pipeline v1 experimental](#pipeline-v1-experimental)
+- [Resources](#resources)
 - [Instalacao](#instalacao)
 - [Executando localmente](#executando-localmente)
 - [Configuracao da aplicacao](#configuracao-da-aplicacao)
@@ -86,7 +87,7 @@ Escopo implementado nesta versao:
 - Target `http`: envia o payload para um endpoint externo.
 - Target `sqs`: envia o payload para uma fila SQS.
 - Validate: sempre retorna valido.
-- Transform: retorna o payload original quando ausente; quando configurado com `engine: template`, pode montar um novo body e headers de saida.
+- Transform: retorna o payload original quando ausente; quando configurado com `engine: template`, pode montar body, headers, query, atributos e outros overrides de saida.
 
 ### Schema raiz
 
@@ -117,19 +118,34 @@ pipeline:
 | `transform` | nao | noop | Transformacao opcional antes do target. Nesta fase suporta `engine: template`. |
 | `target` | sim | - | Saida da pipeline. Nesta fase pode ser `http` ou `sqs`. |
 
-### Source HTTP
+`completion` ainda nao e um campo configuravel no runtime atual. A politica existe de forma implicita por source e o schema planejado esta documentado em cada resource.
+
+## Resources
+
+Cada resource documenta os papeis que suporta dentro da pipeline:
+
+- `source`: como o dado entra na pipeline.
+- `target`: como a pipeline envia dados para fora.
+- `completion`: como a pipeline finaliza a conversa com o source original.
+
+O completion pertence ao source, porque e ele que decide como responder, confirmar ou liberar retry para a origem. Hoje o completion e operacional e implicito. O schema generico documentado abaixo e o modelo planejado para tornar essa etapa configuravel.
+
+### HTTP
+
+HTTP pode ser usado como `source` e como `target`.
+
+#### HTTP Source
 
 ```yaml
 pipeline:
-  id: http-to-http
+  id: receive-orders
   source:
     type: http
     method: POST
-    path: /ingest/{tenant}
+    path: /tenants/{tenant}/orders
   target:
-    type: http
-    method: POST
-    url: https://example.com/events
+    type: sqs
+    queue: orders-output
 ```
 
 | Propriedade | Obrigatoria | Padrao | Descricao |
@@ -138,44 +154,58 @@ pipeline:
 | `method` | nao | `POST` | Metodo aceito. Nesta fase apenas `POST` e registrado. |
 | `path` | sim | - | Rota HTTP da pipeline. Deve iniciar com `/` e pode usar params como `{tenant}`. |
 
-### Source SQS
+#### HTTP Completion
+
+Completion atual para HTTP source:
+
+| Situacao | Acao atual | Resposta HTTP |
+| --- | --- | --- |
+| Target HTTP com sucesso | Responde ao cliente com `CompletionResponse`. | Status retornado pelo target HTTP, ou `200` se ausente. |
+| Target SQS com sucesso | Responde ao cliente com `CompletionResponse`. | `202 Accepted`. |
+| Target falha | Responde ao cliente com `CompletionResponse` de erro. | `502 Bad Gateway`. |
+
+Schema planejado:
 
 ```yaml
-pipeline:
-  id: sqs-to-http
-  source:
-    type: sqs
-    queue: orders-input
-    batchSize: 10
-    waitTimeSeconds: 10
-    visibilityTimeoutSeconds: 30
-  target:
-    type: http
-    method: POST
-    url: https://example.com/orders
+completion:
+  onSuccess:
+    action: ack
+    response:
+      status: 202
+      body:
+        ok: true
+        requestId: "{{ context.requestId }}"
+        target: "{{ target }}"
+  onFailure:
+    action: retry
+    response:
+      status: 502
+      body:
+        ok: false
+        error: "{{ error.message }}"
 ```
 
 | Propriedade | Obrigatoria | Padrao | Descricao |
 | --- | --- | --- | --- |
-| `type` | sim | - | Deve ser `sqs`. |
-| `queue` | condicional | - | Nome ou URL da fila. Obrigatorio quando `queueUrl` nao existe. |
-| `queueUrl` | condicional | - | URL completa da fila. Se informada, e usada diretamente. |
-| `batchSize` | nao | `1` | Quantidade maxima de mensagens por polling. |
-| `waitTimeSeconds` | nao | `10` | Long polling em segundos. |
-| `visibilityTimeoutSeconds` | nao | AWS default | Visibility timeout aplicado ao receive. |
+| `onSuccess.action` | nao | `ack` | Acao quando o target conclui com sucesso. Para HTTP, `ack` significa responder sucesso ao cliente. |
+| `onSuccess.response.status` | nao | status do target ou `202` | Status HTTP planejado para resposta customizada. |
+| `onSuccess.response.body` | nao | `CompletionResponse` | Body planejado para resposta customizada. |
+| `onFailure.action` | nao | `retry` | Acao quando o target falha. Para HTTP, `retry` significa responder erro ao cliente. |
+| `onFailure.response.status` | nao | `502` | Status HTTP planejado para resposta de falha. |
+| `onFailure.response.body` | nao | `CompletionResponse` de erro | Body planejado para resposta customizada de falha. |
 
-### Target HTTP
+#### HTTP Target
 
 ```yaml
 pipeline:
-  id: sqs-to-http
+  id: forward-orders
   source:
     type: sqs
     queue: orders-input
   target:
     type: http
     method: POST
-    url: https://example.com/orders
+    url: https://api.example.com/orders
     timeoutMs: 5000
     headers:
       x-source: postio
@@ -189,11 +219,66 @@ pipeline:
 | `headers` | nao | - | Headers fixos enviados ao target. |
 | `timeoutMs` | nao | sem timeout por request | Timeout da chamada HTTP em milissegundos. |
 
-### Target SQS
+### SQS
+
+SQS pode ser usado como `source` e como `target`.
+
+#### SQS Source
 
 ```yaml
 pipeline:
-  id: http-to-sqs
+  id: consume-orders
+  source:
+    type: sqs
+    queue: orders-input
+    batchSize: 5
+    waitTimeSeconds: 10
+    visibilityTimeoutSeconds: 30
+  target:
+    type: http
+    method: POST
+    url: https://api.example.com/orders
+```
+
+| Propriedade | Obrigatoria | Padrao | Descricao |
+| --- | --- | --- | --- |
+| `type` | sim | - | Deve ser `sqs`. |
+| `queue` | condicional | - | Nome ou URL da fila. Obrigatorio quando `queueUrl` nao existe. |
+| `queueUrl` | condicional | - | URL completa da fila. Se informada, e usada diretamente. |
+| `batchSize` | nao | `1` | Quantidade maxima de mensagens por polling. |
+| `waitTimeSeconds` | nao | `10` | Long polling em segundos. |
+| `visibilityTimeoutSeconds` | nao | AWS default | Visibility timeout aplicado ao receive. |
+
+#### SQS Completion
+
+Completion atual para SQS source:
+
+| Situacao | Acao atual | Efeito no SQS |
+| --- | --- | --- |
+| Target com sucesso | `ack` | Executa `DeleteMessage` na mensagem original. |
+| Target falha | `retry` | Nao deleta a mensagem; ela volta apos o visibility timeout. |
+
+Schema planejado:
+
+```yaml
+completion:
+  onSuccess:
+    action: ack
+  onFailure:
+    action: retry
+```
+
+| Propriedade | Obrigatoria | Padrao | Descricao |
+| --- | --- | --- | --- |
+| `onSuccess.action` | nao | `ack` | Acao quando o target conclui com sucesso. Para SQS, `ack` significa deletar a mensagem original. |
+| `onFailure.action` | nao | `retry` | Acao quando o target falha. Para SQS, `retry` significa nao deletar a mensagem. |
+| `action=drop` | nao | - | Planejado para descartar a mensagem, deletando-a mesmo quando a pipeline rejeitar ou falhar. |
+
+#### SQS Target
+
+```yaml
+pipeline:
+  id: publish-orders
   source:
     type: http
     path: /orders

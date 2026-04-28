@@ -121,6 +121,13 @@ Notas da primeira entrega:
 
 ## Proximos Passos
 
+### Documentacao Por Resource
+
+- `[x]` Reorganizar README com secao `Resources`.
+- `[x]` Documentar resource `HTTP` por papeis: `source`, `target` e `completion`.
+- `[x]` Documentar resource `SQS` por papeis: `source`, `target` e `completion`.
+- `[x]` Explicitar que completion atual e implicito por source e que o schema generico ainda e planejado.
+
 ### Fechar Transform Template
 
 - `[x]` Implementar `transform.output.attributes` para target SQS.
