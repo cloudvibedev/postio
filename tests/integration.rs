@@ -790,7 +790,7 @@ async fn http_pipeline_jsonschema_validation_rejects_invalid_payload_before_http
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn http_pipeline_http_validation_allows_200_and_calls_sqs_target() {
-    let validated = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let validated = Arc::new(tokio::sync::Mutex::new(Vec::<CapturedHttpRequest>::new()));
     let validator_addr = spawn_http_processor(validated.clone(), StatusCode::OK, "ok").await;
     let sqs = MockSqs::spawn(vec![]).await;
     let bridge_config = BridgeConfig {
@@ -845,10 +845,11 @@ async fn http_pipeline_http_validation_allows_200_and_calls_sqs_target() {
     let body = response_json(response).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     assert_eq!(body["status"], "accepted");
-    assert_eq!(
-        validated.lock().await.as_slice(),
-        [r#"{"id":"ord-1","total":42}"#]
-    );
+    let validated = validated.lock().await;
+    assert_eq!(validated.len(), 1);
+    assert_eq!(validated[0].body, r#"{"id":"ord-1","total":42}"#);
+    assert_eq!(validated[0].connection.as_deref(), Some("keep-alive"));
+    drop(validated);
     let sent = sqs.sent_messages().await;
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].body, r#"{"id":"ord-1","total":42}"#);
@@ -856,7 +857,7 @@ async fn http_pipeline_http_validation_allows_200_and_calls_sqs_target() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn http_pipeline_http_validation_rejects_non_200_before_sqs_target() {
-    let validated = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let validated = Arc::new(tokio::sync::Mutex::new(Vec::<CapturedHttpRequest>::new()));
     let validator_addr =
         spawn_http_processor(validated.clone(), StatusCode::NO_CONTENT, "ignored").await;
     let sqs = MockSqs::spawn(vec![]).await;
@@ -914,10 +915,11 @@ async fn http_pipeline_http_validation_rejects_non_200_before_sqs_target() {
         body["details"][0]["message"],
         "http validator returned status 204 No Content"
     );
-    assert_eq!(
-        validated.lock().await.as_slice(),
-        [r#"{"id":"ord-1","total":42}"#]
-    );
+    let validated = validated.lock().await;
+    assert_eq!(validated.len(), 1);
+    assert_eq!(validated[0].body, r#"{"id":"ord-1","total":42}"#);
+    assert_eq!(validated[0].connection.as_deref(), Some("keep-alive"));
+    drop(validated);
     assert!(sqs.sent_messages().await.is_empty());
 }
 
@@ -1129,6 +1131,7 @@ async fn http_pipeline_template_transform_sends_payload_and_headers_to_http_targ
     let captured = captured.lock().await;
     assert_eq!(captured.len(), 1);
     assert_eq!(captured[0].header.as_deref(), Some("invoice.paid"));
+    assert_eq!(captured[0].connection.as_deref(), Some("keep-alive"));
     assert_eq!(
         captured[0].query.as_deref(),
         Some("event=invoice.paid&priority=3&source=integration")
@@ -1141,7 +1144,7 @@ async fn http_pipeline_template_transform_sends_payload_and_headers_to_http_targ
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn http_pipeline_http_transform_sends_response_to_sqs_target() {
-    let transformed_inputs = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let transformed_inputs = Arc::new(tokio::sync::Mutex::new(Vec::<CapturedHttpRequest>::new()));
     let transformer_addr = spawn_http_processor(
         transformed_inputs.clone(),
         StatusCode::OK,
@@ -1200,10 +1203,14 @@ async fn http_pipeline_http_transform_sends_response_to_sqs_target() {
     let status = response.status();
     let body = response_json(response).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let transformed_inputs = transformed_inputs.lock().await;
+    assert_eq!(transformed_inputs.len(), 1);
+    assert_eq!(transformed_inputs[0].body, r#"{"id":"ord-1","total":42}"#);
     assert_eq!(
-        transformed_inputs.lock().await.as_slice(),
-        [r#"{"id":"ord-1","total":42}"#]
+        transformed_inputs[0].connection.as_deref(),
+        Some("keep-alive")
     );
+    drop(transformed_inputs);
     let sent = sqs.sent_messages().await;
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].body, r#"{"transformed":true}"#);
@@ -1211,7 +1218,7 @@ async fn http_pipeline_http_transform_sends_response_to_sqs_target() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn http_pipeline_http_transform_failure_stops_before_sqs_target() {
-    let transformed_inputs = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let transformed_inputs = Arc::new(tokio::sync::Mutex::new(Vec::<CapturedHttpRequest>::new()));
     let transformer_addr = spawn_http_processor(
         transformed_inputs.clone(),
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1275,10 +1282,14 @@ async fn http_pipeline_http_transform_failure_stops_before_sqs_target() {
             .contains("http transform returned status 500 Internal Server Error"),
         "{body}"
     );
+    let transformed_inputs = transformed_inputs.lock().await;
+    assert_eq!(transformed_inputs.len(), 1);
+    assert_eq!(transformed_inputs[0].body, r#"{"id":"ord-1","total":42}"#);
     assert_eq!(
-        transformed_inputs.lock().await.as_slice(),
-        [r#"{"id":"ord-1","total":42}"#]
+        transformed_inputs[0].connection.as_deref(),
+        Some("keep-alive")
     );
+    drop(transformed_inputs);
     assert!(sqs.sent_messages().await.is_empty());
 }
 
@@ -2022,7 +2033,7 @@ async fn capture_flaky_pipeline_target(
 }
 
 async fn spawn_http_processor(
-    captured: Arc<tokio::sync::Mutex<Vec<String>>>,
+    captured: Arc<tokio::sync::Mutex<Vec<CapturedHttpRequest>>>,
     status: StatusCode,
     response_body: &'static str,
 ) -> SocketAddr {
@@ -2043,13 +2054,22 @@ async fn spawn_http_processor(
 
 async fn capture_http_processor(
     AxumState((captured, status, response_body)): AxumState<(
-        Arc<tokio::sync::Mutex<Vec<String>>>,
+        Arc<tokio::sync::Mutex<Vec<CapturedHttpRequest>>>,
         StatusCode,
         &'static str,
     )>,
+    headers: HeaderMap,
     body: String,
 ) -> impl axum::response::IntoResponse {
-    captured.lock().await.push(body);
+    captured.lock().await.push(CapturedHttpRequest {
+        body,
+        header: None,
+        query: None,
+        connection: headers
+            .get("connection")
+            .and_then(|value| value.to_str().ok())
+            .map(ToString::to_string),
+    });
     (status, response_body)
 }
 
@@ -2058,6 +2078,7 @@ struct CapturedHttpRequest {
     body: String,
     header: Option<String>,
     query: Option<String>,
+    connection: Option<String>,
 }
 
 async fn spawn_http_target_with_headers(
@@ -2091,6 +2112,10 @@ async fn capture_pipeline_target_with_headers(
             .and_then(|value| value.to_str().ok())
             .map(ToString::to_string),
         query: uri.query().map(ToString::to_string),
+        connection: headers
+            .get("connection")
+            .and_then(|value| value.to_str().ok())
+            .map(ToString::to_string),
     });
     Json(serde_json::json!({ "received": true }))
 }

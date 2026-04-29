@@ -250,7 +250,7 @@ pipeline:
 | `type` | sim | - | Deve ser `http`. |
 | `method` | nao | `POST` | Metodo usado na chamada para o target. |
 | `url` | sim | - | Endpoint destino. |
-| `headers` | nao | - | Headers fixos enviados ao target. |
+| `headers` | nao | `connection: keep-alive` | Headers fixos enviados ao target. Quando `connection` nao e configurado, o Postio envia `connection: keep-alive`. |
 | `timeoutMs` | nao | sem timeout por request | Timeout da chamada HTTP em milissegundos. |
 | `retry` | nao | sem retry | Retry de envio ao target. |
 
@@ -468,7 +468,7 @@ Campos de `validate.engine: http`:
 | `engine` | sim | - | Deve ser `http`. |
 | `method` | nao | `POST` | Metodo usado para chamar o validador. |
 | `url` | sim | - | Endpoint externo de validacao. |
-| `headers` | nao | - | Headers fixos enviados ao endpoint validador. |
+| `headers` | nao | `connection: keep-alive` | Headers fixos enviados ao endpoint validador. Quando `connection` nao e configurado, o Postio envia `connection: keep-alive`. |
 | `timeoutMs` | nao | sem timeout por request | Timeout da chamada em milissegundos. |
 
 Comportamento:
@@ -691,7 +691,7 @@ Campos de `transform.engine: http`:
 | `engine` | sim | - | Deve ser `http`. |
 | `method` | nao | `POST` | Metodo usado para chamar o transformador. |
 | `url` | sim | - | Endpoint externo de transformacao. |
-| `headers` | nao | - | Headers fixos enviados ao endpoint transformador. |
+| `headers` | nao | `connection: keep-alive` | Headers fixos enviados ao endpoint transformador. Quando `connection` nao e configurado, o Postio envia `connection: keep-alive`. |
 | `timeoutMs` | nao | sem timeout por request | Timeout da chamada em milissegundos. |
 
 Exemplo de entrada:

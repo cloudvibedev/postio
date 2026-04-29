@@ -341,6 +341,13 @@ async fn apply_http_transform(
         .request(method, &config.url)
         .body(message.payload.to_string_body());
 
+    if !config
+        .headers
+        .as_ref()
+        .is_some_and(|headers| contains_header(headers, "connection"))
+    {
+        request = request.header("connection", "keep-alive");
+    }
     if let Some(timeout_ms) = config.timeout_ms {
         request = request.timeout(Duration::from_millis(timeout_ms));
     }
@@ -765,6 +772,14 @@ async fn send_to_target(
                 .http
                 .request(method, url)
                 .body(message.payload.to_bytes());
+            let has_connection = config
+                .headers
+                .as_ref()
+                .is_some_and(|headers| contains_header(headers, "connection"))
+                || contains_header(&message.target.headers, "connection");
+            if !has_connection {
+                request = request.header("connection", "keep-alive");
+            }
             if let Some(timeout_ms) = config.timeout_ms {
                 request = request.timeout(Duration::from_millis(timeout_ms));
             }

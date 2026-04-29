@@ -595,7 +595,7 @@ Campos:
 | `engine` | sim | `http` |
 | `url` | sim | Endpoint externo |
 | `method` | nao | Metodo; padrao `POST` |
-| `headers` | nao | Headers fixos enviados ao transformador |
+| `headers` | nao | Headers fixos enviados ao transformador; default inclui `connection: keep-alive` quando nao configurado |
 | `timeoutMs` | nao | Timeout em milissegundos |
 
 Contrato implementado:
@@ -730,7 +730,7 @@ Campos:
 | `engine` | sim | `http` |
 | `url` | sim | Endpoint externo |
 | `method` | nao | Metodo; padrao `POST` |
-| `headers` | nao | Headers fixos enviados ao validador |
+| `headers` | nao | Headers fixos enviados ao validador; default inclui `connection: keep-alive` quando nao configurado |
 | `timeoutMs` | nao | Timeout em milissegundos |
 
 Contrato implementado:
@@ -1590,7 +1590,7 @@ O runtime deve inicializar recursos compartilhados no startup e injeta-los nos s
 ### Objetivo
 
 - Evitar criar clients AWS/HTTP a cada request.
-- Reaproveitar connection pools.
+- Reaproveitar connection pools e manter `connection: keep-alive` nas integracoes HTTP outbound.
 - Centralizar cache de resolucao de recursos.
 - Facilitar testes com providers fake.
 - Evitar que steps conhecam detalhes de construcao de clients.

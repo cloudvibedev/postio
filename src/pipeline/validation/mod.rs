@@ -93,6 +93,13 @@ async fn validate_http(
         .request(method, &config.url)
         .body(payload.to_string_body());
 
+    if !config
+        .headers
+        .as_ref()
+        .is_some_and(|headers| contains_header(headers, "connection"))
+    {
+        request = request.header("connection", "keep-alive");
+    }
     if let Some(timeout_ms) = config.timeout_ms {
         request = request.timeout(Duration::from_millis(timeout_ms));
     }
@@ -136,4 +143,10 @@ fn validation_failure(message: String) -> ValidationFailure {
             message,
         }],
     }
+}
+
+fn contains_header(headers: &std::collections::BTreeMap<String, String>, key: &str) -> bool {
+    headers
+        .keys()
+        .any(|header| header.eq_ignore_ascii_case(key))
 }

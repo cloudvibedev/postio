@@ -223,11 +223,13 @@ Notas:
 - `[x]` Implementar `transform.engine: http` com contrato string in/string out e sucesso `2xx`.
 - `[x]` Criar testes de integracao para validacao HTTP aceita/rejeita.
 - `[x]` Criar testes de integracao para transform HTTP com sucesso/falha antes do target.
+- `[x]` Manter `connection: keep-alive` por default nas integracoes HTTP outbound (`target.http`, `validate.engine: http` e `transform.engine: http`).
 
 Notas:
 
 - Engine embarcada de script foi removida do projeto e do plano ativo por decisao de produto.
 - O escopo atual fica em `validate.engine: jsonschema`, `validate.engine: http`, `transform.engine: template`, `transform.engine: http` e integracoes HTTP/SQS.
+- O header `connection` pode ser sobrescrito via `headers`; quando ausente, o runtime envia `keep-alive`.
 
 ## Rotas Temporarias De Validacao
 
