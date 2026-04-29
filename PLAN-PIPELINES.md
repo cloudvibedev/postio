@@ -631,8 +631,15 @@ Campos:
 | Campo | Obrigatorio | Descricao |
 | --- | --- | --- |
 | `engine` | sim | `rhai` |
-| `script` | condicional | Script inline |
-| `scriptRef` | condicional | Caminho/referencia para script |
+| `script` | sim | Script inline |
+| `scriptRef` | nao | Planejado para etapa futura |
+
+Contrato implementado:
+
+- O script recebe `input.body`, `input.headers`, `input.params`, `input.query` e `input.context`.
+- O script deve retornar um objeto com `body`, `headers`, `method`, `url`, `query`, `attributes` e/ou `delaySeconds`.
+- Scripts sao compilados no startup e o AST fica cacheado no runtime.
+- O engine inicial usa `max_operations=100000` e nao registra funcoes de I/O, rede ou filesystem.
 
 ### TransformConfig: External HTTP
 
@@ -2557,11 +2564,13 @@ transform:
 
 ### Fase 7: Transform Rhai
 
-- Adicionar engine Rhai.
-- Compilar scripts no startup.
-- Cachear AST.
-- Definir funcoes utilitarias seguras.
-- Adicionar timeouts/limites quando possivel.
+- `[x]` Adicionar engine Rhai.
+- `[x]` Compilar scripts no startup.
+- `[x]` Cachear AST.
+- `[x]` Definir contrato de entrada e saida.
+- `[x]` Adicionar limite inicial de operacoes.
+- `[ ]` Definir funcoes utilitarias seguras.
+- `[ ]` Suportar `scriptRef`.
 
 ### Fase 8: External Transform HTTP
 

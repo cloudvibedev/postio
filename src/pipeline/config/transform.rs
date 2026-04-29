@@ -7,12 +7,19 @@ use serde_json::Value;
 #[serde(tag = "engine", rename_all = "camelCase")]
 pub enum TransformConfig {
     Template(TemplateTransformConfig),
+    Rhai(RhaiTransformConfig),
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateTransformConfig {
     pub output: TransformTemplateOutput,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RhaiTransformConfig {
+    pub script: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

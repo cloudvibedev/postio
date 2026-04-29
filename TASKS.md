@@ -217,10 +217,21 @@ Notas:
 
 ### Transformacao Avancada
 
-- `[ ]` Revisar no plano o escopo minimo do `transform.engine: rhai`.
-- `[ ]` Definir contrato de entrada e saida do Rhai antes de implementar.
-- `[ ]` Definir limites de seguranca do Rhai: timeout, funcoes permitidas e acesso a contexto.
-- `[ ]` Implementar Rhai somente depois de fechar `template` e `jsonschema`.
+- `[x]` Revisar no plano o escopo minimo do `transform.engine: rhai`.
+- `[x]` Definir contrato de entrada e saida do Rhai antes de implementar.
+- `[x]` Definir limites de seguranca do Rhai: limite de operacoes, sem funcoes de I/O/rede/filesystem e acesso restrito a `input`.
+- `[x]` Implementar Rhai somente depois de fechar `template` e `jsonschema`.
+- `[x]` Compilar scripts Rhai no startup e cachear AST no runtime.
+- `[x]` Criar testes de parsing/validacao de config Rhai.
+- `[x]` Criar teste `HTTP -> SQS` com `transform.engine: rhai`.
+- `[ ]` Definir funcoes utilitarias seguras para Rhai.
+- `[ ]` Suportar `scriptRef` para script externo.
+
+Notas:
+
+- Contrato atual do Rhai recebe `input.body`, `input.headers`, `input.params`, `input.query` e `input.context`.
+- Retorno atual aceita `body`, `headers`, `method`, `url`, `query`, `attributes` e `delaySeconds`.
+- Falha de transform interrompe a pipeline antes do target e segue para completion como `status=failed`.
 
 ## Rotas Temporarias De Validacao
 

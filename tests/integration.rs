@@ -27,10 +27,10 @@ use postio::{
         config::{
             HttpCompletionResponseConfig, HttpCompletionRule, HttpSourceCompletionConfig,
             HttpSourceConfig, HttpTargetConfig, JsonSchemaValidateConfig, PipelineConfig,
-            RetryBackoffConfig, SourceConfig, SqsCompletionAction, SqsCompletionRule,
-            SqsDeadLetterConfig, SqsSourceCompletionConfig, SqsSourceConfig, SqsTargetConfig,
-            TargetConfig, TargetRetryConfig, TemplateTransformConfig, TransformConfig,
-            TransformTemplateOutput, ValidateConfig,
+            RetryBackoffConfig, RhaiTransformConfig, SourceConfig, SqsCompletionAction,
+            SqsCompletionRule, SqsDeadLetterConfig, SqsSourceCompletionConfig, SqsSourceConfig,
+            SqsTargetConfig, TargetConfig, TargetRetryConfig, TemplateTransformConfig,
+            TransformConfig, TransformTemplateOutput, ValidateConfig,
         },
         resources::PipelineResources,
         runtime::PipelineRuntime,
@@ -931,6 +931,86 @@ async fn http_pipeline_template_transform_sends_payload_to_sqs_target() {
     assert!(transformed["requestId"]
         .as_str()
         .is_some_and(|value| !value.is_empty()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_pipeline_rhai_transform_sends_payload_to_sqs_target() {
+    let sqs = MockSqs::spawn(vec![]).await;
+    let bridge_config = BridgeConfig {
+        routes: Vec::new(),
+        pipeline: Some(PipelineConfig {
+            id: "http-to-sqs-rhai".to_string(),
+            enabled: true,
+            source: SourceConfig::Http(HttpSourceConfig {
+                method: "POST".to_string(),
+                path: "/pipe/{tenant}".to_string(),
+                completion: None,
+            }),
+            validate: None,
+            transform: Some(TransformConfig::Rhai(RhaiTransformConfig {
+                script: r#"
+                    #{
+                        body: #{
+                            event: input.body.event,
+                            tenant: input.params.tenant,
+                            source: input.query.source,
+                            sourceType: input.context.sourceType,
+                            original: input.body
+                        },
+                        attributes: #{
+                            event: input.body.event,
+                            tenant: input.params.tenant,
+                            priority: input.body.priority
+                        }
+                    }
+                "#
+                .to_string(),
+            })),
+            target: TargetConfig::Sqs(SqsTargetConfig {
+                queue: None,
+                queue_url: Some(sqs.queue_url("output")),
+                delay_seconds: None,
+                retry: None,
+            }),
+        }),
+    };
+    let router = setup_router_with_sqs_client(
+        bridge_config,
+        Arc::new(NoopDispatcher),
+        test_sqs_client_for(sqs.endpoint_url()),
+    )
+    .await;
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/pipe/acme?source=rhai")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"event":"order.rhai","priority":5,"total":42}"#,
+                ))
+                .expect("build request"),
+        )
+        .await
+        .expect("request failed");
+
+    let status = response.status();
+    let body = response_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["status"], "accepted");
+    let sent = sqs.sent_messages().await;
+    assert_eq!(sent.len(), 1);
+    let transformed: Value = serde_json::from_str(&sent[0].body).expect("sqs body should be json");
+    assert_eq!(transformed["event"], "order.rhai");
+    assert_eq!(transformed["tenant"], "acme");
+    assert_eq!(transformed["source"], "rhai");
+    assert_eq!(transformed["sourceType"], "http");
+    assert_eq!(transformed["original"]["total"], 42);
+    assert_eq!(sent[0].attributes["event"], "order.rhai");
+    assert_eq!(sent[0].attributes["tenant"], "acme");
+    assert_eq!(sent[0].attributes["priority"], "5");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
