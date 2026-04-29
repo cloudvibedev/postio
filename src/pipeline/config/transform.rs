@@ -3,10 +3,13 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::default_method;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "engine", rename_all = "camelCase")]
 pub enum TransformConfig {
     Template(TemplateTransformConfig),
+    Http(HttpTransformConfig),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -25,4 +28,14 @@ pub struct TransformTemplateOutput {
     pub body: Option<Value>,
     pub delay_seconds: Option<i32>,
     pub attributes: Option<BTreeMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpTransformConfig {
+    #[serde(default = "default_method")]
+    pub method: String,
+    pub url: String,
+    pub headers: Option<BTreeMap<String, String>>,
+    pub timeout_ms: Option<u64>,
 }

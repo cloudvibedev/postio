@@ -119,6 +119,7 @@ pub struct TargetResponse {
 #[derive(Debug)]
 pub enum PipelineFailure {
     Target(String),
+    Transform(String),
     Validation(ValidationFailure),
 }
 

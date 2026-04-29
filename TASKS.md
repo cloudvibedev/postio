@@ -218,13 +218,16 @@ Notas:
 ### Transformacao Avancada
 
 - `[x]` Remover engine embarcada de script do escopo ativo.
-- `[x]` Manter somente `transform.engine: template` no runtime atual.
-- `[ ]` Planejar `transform.engine: external-http` como proxima opcao para transformacao customizada.
+- `[x]` Manter `transform.engine: template` no runtime atual.
+- `[x]` Implementar `validate.engine: http` com contrato status `200 OK` para aceitar.
+- `[x]` Implementar `transform.engine: http` com contrato string in/string out e sucesso `2xx`.
+- `[x]` Criar testes de integracao para validacao HTTP aceita/rejeita.
+- `[x]` Criar testes de integracao para transform HTTP com sucesso/falha antes do target.
 
 Notas:
 
 - Engine embarcada de script foi removida do projeto e do plano ativo por decisao de produto.
-- O escopo atual fica em `validate.engine: jsonschema`, `transform.engine: template` e integracoes HTTP/SQS.
+- O escopo atual fica em `validate.engine: jsonschema`, `validate.engine: http`, `transform.engine: template`, `transform.engine: http` e integracoes HTTP/SQS.
 
 ## Rotas Temporarias De Validacao
 

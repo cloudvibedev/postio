@@ -6,8 +6,8 @@ use serde_json::Value;
 
 use crate::pipeline::{
     config::{
-        PipelineConfig, RetryBackoffConfig, SourceConfig, SqsCompletionAction, TargetConfig,
-        TargetRetryConfig,
+        HttpTransformConfig, PipelineConfig, RetryBackoffConfig, SourceConfig, SqsCompletionAction,
+        TargetConfig, TargetRetryConfig, TransformConfig,
     },
     validation::PipelineValidator,
 };
@@ -214,7 +214,43 @@ fn validate_pipeline(pipeline: &PipelineConfig) -> Result<()> {
 
     PipelineValidator::compile(pipeline.validate.clone())
         .with_context(|| format!("pipeline {} validate config is invalid", pipeline.id))?;
+    if let Some(transform) = &pipeline.transform {
+        validate_transform_config(pipeline, transform)
+            .with_context(|| format!("pipeline {} transform config is invalid", pipeline.id))?;
+    }
 
+    Ok(())
+}
+
+fn validate_transform_config(pipeline: &PipelineConfig, transform: &TransformConfig) -> Result<()> {
+    match transform {
+        TransformConfig::Template(_) => Ok(()),
+        TransformConfig::Http(config) => validate_http_transform_config(pipeline, config),
+    }
+}
+
+fn validate_http_transform_config(
+    pipeline: &PipelineConfig,
+    config: &HttpTransformConfig,
+) -> Result<()> {
+    if config.method.trim().is_empty() {
+        return Err(anyhow!(
+            "pipeline {} http transform method cannot be empty",
+            pipeline.id
+        ));
+    }
+    reqwest::Method::from_bytes(config.method.as_bytes()).with_context(|| {
+        format!(
+            "pipeline {} invalid http transform method {}",
+            pipeline.id, config.method
+        )
+    })?;
+    if config.url.trim().is_empty() {
+        return Err(anyhow!(
+            "pipeline {} http transform url cannot be empty",
+            pipeline.id
+        ));
+    }
     Ok(())
 }
 
@@ -433,13 +469,88 @@ pipeline:
         let config = validate_config(config).expect("config is valid");
         let pipeline = config.pipeline.expect("pipeline");
         let transform = pipeline.transform.expect("transform");
-        let crate::pipeline::config::TransformConfig::Template(config) = transform;
+        let crate::pipeline::config::TransformConfig::Template(config) = transform else {
+            panic!("expected template transform");
+        };
         assert_eq!(
             config.output.headers.expect("headers")["x-event-type"],
             "{{ body.type }}"
         );
         assert_eq!(config.output.delay_seconds, Some(2));
         assert!(config.output.body.expect("body").is_object());
+    }
+
+    #[test]
+    fn parses_pipeline_http_validate_and_transform() {
+        let config: BridgeConfig = serde_yaml::from_str(
+            r#"
+pipeline:
+  id: http-http-engines
+  source:
+    type: http
+    path: /orders
+  validate:
+    engine: http
+    url: https://validator.example.com/orders
+    headers:
+      x-validator: orders
+  transform:
+    engine: http
+    method: POST
+    url: https://transformer.example.com/orders
+    timeoutMs: 1000
+  target:
+    type: sqs
+    queue: orders-output
+"#,
+        )
+        .expect("config parses");
+
+        let config = validate_config(config).expect("config is valid");
+        let pipeline = config.pipeline.expect("pipeline");
+        let crate::pipeline::config::ValidateConfig::Http(validate) =
+            pipeline.validate.expect("validate")
+        else {
+            panic!("expected http validate");
+        };
+        assert_eq!(validate.method, "POST");
+        assert_eq!(validate.url, "https://validator.example.com/orders");
+        assert_eq!(validate.headers.expect("headers")["x-validator"], "orders");
+
+        let crate::pipeline::config::TransformConfig::Http(transform) =
+            pipeline.transform.expect("transform")
+        else {
+            panic!("expected http transform");
+        };
+        assert_eq!(transform.method, "POST");
+        assert_eq!(transform.url, "https://transformer.example.com/orders");
+        assert_eq!(transform.timeout_ms, Some(1000));
+    }
+
+    #[test]
+    fn rejects_invalid_pipeline_http_transform() {
+        let config: BridgeConfig = serde_yaml::from_str(
+            r#"
+pipeline:
+  id: invalid-http-transform
+  source:
+    type: http
+    path: /orders
+  transform:
+    engine: http
+    url: ""
+  target:
+    type: sqs
+    queue: orders-output
+"#,
+        )
+        .expect("config parses");
+
+        let error = validate_config(config).expect_err("invalid http transform is rejected");
+        assert!(
+            error.to_string().contains("transform config is invalid"),
+            "{error}"
+        );
     }
 
     #[test]

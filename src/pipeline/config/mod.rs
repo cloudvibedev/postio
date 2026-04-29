@@ -13,8 +13,10 @@ pub use source::{
 pub use target::{
     HttpTargetConfig, RetryBackoffConfig, SqsTargetConfig, TargetConfig, TargetRetryConfig,
 };
-pub use transform::{TemplateTransformConfig, TransformConfig, TransformTemplateOutput};
-pub use validate::{JsonSchemaValidateConfig, ValidateConfig};
+pub use transform::{
+    HttpTransformConfig, TemplateTransformConfig, TransformConfig, TransformTemplateOutput,
+};
+pub use validate::{HttpValidateConfig, JsonSchemaValidateConfig, ValidateConfig};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

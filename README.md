@@ -4,7 +4,7 @@ Postio e uma API de injestao de dados configuravel. Ela recebe chamadas HTTP `PO
 
 O objetivo da v0 e ser simples de operar: uma aplicacao, um arquivo YAML/JSON, varias rotas, varios destinos.
 
-A evolucao v1 adiciona um modo de pipeline unica por processo. Nessa primeira implementacao, a pipeline suporta entradas e saidas `http` e `sqs`, com etapas internas de decode, validate noop, transform template opcional, target e completion.
+A evolucao v1 adiciona um modo de pipeline unica por processo. Nessa primeira implementacao, a pipeline suporta entradas e saidas `http` e `sqs`, com etapas internas de decode, validate, transform, target e completion.
 
 ## Sumario
 
@@ -77,7 +77,7 @@ O bloco `pipeline` executa uma unica pipeline por processo/deployment Postio. El
 Fluxo interno atual:
 
 ```text
-source -> decode -> validate(noop/jsonschema) -> transform(noop/template) -> target -> completion
+source -> decode -> validate(noop/jsonschema/http) -> transform(noop/template/http) -> target -> completion
 ```
 
 Escopo implementado nesta versao:
@@ -86,8 +86,8 @@ Escopo implementado nesta versao:
 - Source `sqs`: faz polling da fila, envia cada mensagem para a pipeline e finaliza conforme `source.completion`.
 - Target `http`: envia o payload para um endpoint externo.
 - Target `sqs`: envia o payload para uma fila SQS.
-- Validate: retorna valido quando ausente; quando configurado com `engine: jsonschema`, valida o payload antes do transform e bloqueia o target em caso de rejeicao.
-- Transform: retorna o payload original quando ausente; quando configurado com `engine: template`, pode montar body, headers, query, atributos e outros overrides de saida.
+- Validate: retorna valido quando ausente; com `engine: jsonschema`, valida o payload localmente; com `engine: http`, chama um endpoint validador e aceita somente status `200 OK`.
+- Transform: retorna o payload original quando ausente; com `engine: template`, monta body, headers, query, atributos e outros overrides de saida; com `engine: http`, envia o payload como string para um endpoint e usa a resposta como novo payload.
 - Completion: pode ser configurado em `source.completion`. HTTP customiza status/body da resposta; SQS decide `ack`, `retry`, `drop` ou `deadLetter`.
 
 ### Schema raiz
@@ -130,8 +130,8 @@ pipeline:
 | `enabled` | nao | `true` | Liga ou desliga a pipeline. |
 | `source` | sim | - | Entrada da pipeline. Nesta fase pode ser `http` ou `sqs`. |
 | `source.completion` | nao | politica default | Politica de finalizacao do source. |
-| `validate` | nao | noop | Validacao opcional antes do transform. Nesta fase suporta `engine: jsonschema` com schema inline. |
-| `transform` | nao | noop | Transformacao opcional antes do target. Nesta fase suporta `engine: template`. |
+| `validate` | nao | noop | Validacao opcional antes do transform. Suporta `engine: jsonschema` e `engine: http`. |
+| `transform` | nao | noop | Transformacao opcional antes do target. Suporta `engine: template` e `engine: http`. |
 | `target` | sim | - | Saida da pipeline. Nesta fase pode ser `http` ou `sqs`. |
 
 `source.completion` e opcional. Quando ausente, a politica default continua ativa por source.
@@ -146,7 +146,7 @@ Cada resource documenta os papeis que suporta dentro da pipeline:
 
 O completion pertence ao `source`, porque e ele que decide como responder, confirmar ou liberar retry para a origem. Ja o retry de envio pertence ao `target`, como `target.retry`, porque controla tentativas de entrega para o destino.
 
-No codigo, os schemas de pipeline ficam em `src/pipeline/config/`, separados por familia: `source.rs`, `target.rs`, `transform.rs` e `validate.rs`. As structs continuam separadas por resource e papel, como `HttpSourceConfig`, `HttpSourceCompletionConfig`, `HttpTargetConfig`, `SqsSourceConfig`, `SqsSourceCompletionConfig`, `SqsDeadLetterConfig`, `SqsTargetConfig`, `TemplateTransformConfig` e `ValidateConfig`.
+No codigo, os schemas de pipeline ficam em `src/pipeline/config/`, separados por familia: `source.rs`, `target.rs`, `transform.rs` e `validate.rs`. As structs continuam separadas por resource e papel, como `HttpSourceConfig`, `HttpSourceCompletionConfig`, `HttpTargetConfig`, `HttpValidateConfig`, `HttpTransformConfig`, `SqsSourceConfig`, `SqsSourceCompletionConfig`, `SqsDeadLetterConfig`, `SqsTargetConfig`, `TemplateTransformConfig` e `ValidateConfig`.
 
 ### HTTP
 
@@ -438,6 +438,47 @@ Resposta HTTP em caso de rejeicao:
 }
 ```
 
+### Validate HTTP
+
+O validate `http` chama um endpoint externo antes do transform. O Postio envia o payload atual como string no body da requisicao. A validacao e aceita somente quando o endpoint responde `200 OK`; qualquer outro status ou erro de chamada rejeita o payload e impede o target.
+
+```yaml
+pipeline:
+  id: http-to-sqs-http-validated
+  source:
+    type: http
+    method: POST
+    path: /orders
+  validate:
+    engine: http
+    method: POST
+    url: https://validator.example.com/orders
+    timeoutMs: 2000
+    headers:
+      x-validator: orders
+  target:
+    type: sqs
+    queue: orders-output
+```
+
+Campos de `validate.engine: http`:
+
+| Propriedade | Obrigatoria | Padrao | Descricao |
+| --- | --- | --- | --- |
+| `engine` | sim | - | Deve ser `http`. |
+| `method` | nao | `POST` | Metodo usado para chamar o validador. |
+| `url` | sim | - | Endpoint externo de validacao. |
+| `headers` | nao | - | Headers fixos enviados ao endpoint validador. |
+| `timeoutMs` | nao | sem timeout por request | Timeout da chamada em milissegundos. |
+
+Comportamento:
+
+| Resposta do validador | Resultado |
+| --- | --- |
+| `200 OK` | O payload segue para `transform` e `target`. |
+| Qualquer outro status | O payload e rejeitado com `status: rejected`. |
+| Erro de rede ou timeout | O payload e rejeitado com `status: rejected`. |
+
 ### Transform Template
 
 O transform `template` monta uma nova requisicao de saida antes do target. Quando `transform` nao existe, a pipeline continua em modo noop e envia o payload original.
@@ -619,6 +660,60 @@ Request enviado ao HTTP target:
   }
 }
 ```
+
+### Transform HTTP
+
+O transform `http` chama um endpoint externo para produzir o novo payload. O Postio envia o payload atual como string no body da requisicao e espera a resposta como string. Em sucesso `2xx`, o body da resposta vira o payload que sera enviado ao target. Em status nao `2xx` ou erro de chamada, a pipeline falha antes do target.
+
+```yaml
+pipeline:
+  id: http-transform-to-sqs
+  source:
+    type: http
+    method: POST
+    path: /orders
+  transform:
+    engine: http
+    method: POST
+    url: https://transformer.example.com/orders
+    timeoutMs: 3000
+    headers:
+      x-transformer: orders
+  target:
+    type: sqs
+    queue: orders-output
+```
+
+Campos de `transform.engine: http`:
+
+| Propriedade | Obrigatoria | Padrao | Descricao |
+| --- | --- | --- | --- |
+| `engine` | sim | - | Deve ser `http`. |
+| `method` | nao | `POST` | Metodo usado para chamar o transformador. |
+| `url` | sim | - | Endpoint externo de transformacao. |
+| `headers` | nao | - | Headers fixos enviados ao endpoint transformador. |
+| `timeoutMs` | nao | sem timeout por request | Timeout da chamada em milissegundos. |
+
+Exemplo de entrada:
+
+```json
+{
+  "id": "ord-1",
+  "total": 99.9
+}
+```
+
+Exemplo de resposta do transformador:
+
+```json
+{
+  "event": "order.received",
+  "id": "ord-1",
+  "total": 99.9
+}
+```
+
+Nesse caso, o target recebe exatamente o body retornado pelo transformador.
 
 ### Exemplos de pipeline
 

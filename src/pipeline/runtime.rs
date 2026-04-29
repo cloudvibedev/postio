@@ -16,9 +16,9 @@ use crate::{
     bridge::template::{render_to_string, render_value, TemplateContext},
     pipeline::{
         config::{
-            HttpCompletionRule, PipelineConfig, RetryBackoffConfig, SourceConfig,
-            SqsCompletionAction, SqsCompletionRule, SqsDeadLetterConfig, TargetConfig,
-            TargetRetryConfig, TransformConfig,
+            HttpCompletionRule, HttpTransformConfig, PipelineConfig, RetryBackoffConfig,
+            SourceConfig, SqsCompletionAction, SqsCompletionRule, SqsDeadLetterConfig,
+            TargetConfig, TargetRetryConfig, TransformConfig,
         },
         model::{
             CompletionResponse, MessageMetadata, Payload, PipelineFailure, PipelineMessage,
@@ -56,11 +56,14 @@ impl PipelineRuntime {
             transform_tx,
             completion_tx.clone(),
             validator,
+            resources.clone(),
         ));
         tokio::spawn(run_transform_worker(
             transform_rx,
             target_tx,
+            completion_tx.clone(),
             config.transform.clone(),
+            resources.clone(),
         ));
         tokio::spawn(run_target_worker(
             target_rx,
@@ -178,6 +181,7 @@ async fn run_validate_worker(
     tx: mpsc::Sender<PipelineMessage>,
     completion_tx: mpsc::Sender<PipelineResult>,
     validator: PipelineValidator,
+    resources: PipelineResources,
 ) {
     while let Some(message) = rx.recv().await {
         let engine = validator.engine_name();
@@ -190,7 +194,7 @@ async fn run_validate_worker(
             validation.error_count = tracing::field::Empty
         ));
         async {
-            match validator.validate(&message.payload) {
+            match validator.validate(&message.payload, &resources).await {
                 Ok(()) => {
                     tracing::Span::current().record("result.status", "accepted");
                     tracing::Span::current().record("validation.error_count", 0);
@@ -229,10 +233,13 @@ async fn run_validate_worker(
 async fn run_transform_worker(
     mut rx: mpsc::Receiver<PipelineMessage>,
     tx: mpsc::Sender<PipelineMessage>,
+    completion_tx: mpsc::Sender<PipelineResult>,
     transform: Option<TransformConfig>,
+    resources: PipelineResources,
 ) {
     let engine = match transform.as_ref() {
         Some(TransformConfig::Template(_)) => "template",
+        Some(TransformConfig::Http(_)) => "http",
         None => "noop",
     };
     while let Some(mut message) = rx.recv().await {
@@ -240,12 +247,35 @@ async fn run_transform_worker(
             "postio.pipeline.transform.request",
             pipeline.id = %message.pipeline_id,
             request.id = %message.id,
-            engine = engine
+            engine = engine,
+            result.status = tracing::field::Empty,
+            error.kind = tracing::field::Empty
         ));
         async {
             if let Some(transform) = transform.as_ref() {
-                apply_transform(transform, &mut message);
+                if let Err(error) = apply_transform(transform, &mut message, &resources).await {
+                    tracing::Span::current().record("result.status", "failed");
+                    tracing::Span::current().record("error.kind", "transform_failed");
+                    error!(
+                        %error,
+                        pipeline.id = %message.pipeline_id,
+                        request.id = %message.id,
+                        "pipeline transform failed"
+                    );
+                    if completion_tx
+                        .send(PipelineResult {
+                            message,
+                            target: Err(PipelineFailure::Transform(error.to_string())),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        warn!("pipeline completion channel closed");
+                    }
+                    return;
+                }
             }
+            tracing::Span::current().record("result.status", "accepted");
             if tx.send(message).await.is_err() {
                 warn!("pipeline target channel closed");
             }
@@ -255,7 +285,11 @@ async fn run_transform_worker(
     }
 }
 
-fn apply_transform(transform: &TransformConfig, message: &mut PipelineMessage) {
+async fn apply_transform(
+    transform: &TransformConfig,
+    message: &mut PipelineMessage,
+    resources: &PipelineResources,
+) -> Result<()> {
     match transform {
         TransformConfig::Template(config) => {
             let ctx = template_context(message);
@@ -289,8 +323,48 @@ fn apply_transform(transform: &TransformConfig, message: &mut PipelineMessage) {
             if let Some(delay_seconds) = config.output.delay_seconds {
                 message.target.delay_seconds = Some(delay_seconds);
             }
+            Ok(())
+        }
+        TransformConfig::Http(config) => apply_http_transform(config, message, resources).await,
+    }
+}
+
+async fn apply_http_transform(
+    config: &HttpTransformConfig,
+    message: &mut PipelineMessage,
+    resources: &PipelineResources,
+) -> Result<()> {
+    let method = reqwest::Method::from_bytes(config.method.as_bytes())
+        .with_context(|| format!("invalid http transform method {}", config.method))?;
+    let mut request = resources
+        .http
+        .request(method, &config.url)
+        .body(message.payload.to_string_body());
+
+    if let Some(timeout_ms) = config.timeout_ms {
+        request = request.timeout(Duration::from_millis(timeout_ms));
+    }
+    if let Some(headers) = &config.headers {
+        for (key, value) in headers {
+            request = request.header(key, value);
         }
     }
+
+    let response = request
+        .send()
+        .await
+        .context("failed to call http transform")?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .context("failed to read http transform response")?;
+    if !status.is_success() {
+        return Err(anyhow!("http transform returned status {status}: {body}"));
+    }
+
+    message.payload = Payload::Text(body);
+    Ok(())
 }
 
 fn render_template_string(value: &serde_json::Value, ctx: &TemplateContext) -> String {
@@ -431,6 +505,22 @@ async fn run_completion_worker(
                     },
                 ),
                 Err(PipelineFailure::Target(error)) => (
+                    CompletionKind::TargetFailure,
+                    CompletionResponse {
+                        pipeline_id: result.message.pipeline_id.clone(),
+                        request_id: result.message.id.to_string(),
+                        status: "failed".to_string(),
+                        target_type: None,
+                        target_status_code: None,
+                        body: None,
+                        message_id: None,
+                        error: Some(error),
+                        details: None,
+                        http_status_code: None,
+                        http_body: None,
+                    },
+                ),
+                Err(PipelineFailure::Transform(error)) => (
                     CompletionKind::TargetFailure,
                     CompletionResponse {
                         pipeline_id: result.message.pipeline_id.clone(),

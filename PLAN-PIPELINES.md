@@ -576,16 +576,15 @@ Regras:
 - Se a string inteira e template, preserva tipo JSON quando possivel.
 - Se template esta embutido em outra string, resultado e string.
 
-### TransformConfig: External HTTP
+### TransformConfig: HTTP
 
 ```yaml
 transform:
-  engine: external-http
+  engine: http
   url: https://transformer.example.com/orders
   method: POST
-  mode: string
-  requestContentType: text/plain
-  responseContentType: text/plain
+  headers:
+    x-transformer: orders
   timeoutMs: 3000
 ```
 
@@ -593,15 +592,20 @@ Campos:
 
 | Campo | Obrigatorio | Descricao |
 | --- | --- | --- |
-| `engine` | sim | `external-http` |
+| `engine` | sim | `http` |
 | `url` | sim | Endpoint externo |
 | `method` | nao | Metodo; padrao `POST` |
-| `mode` | sim | Inicialmente `string` |
-| `requestContentType` | nao | Content-Type enviado |
-| `responseContentType` | nao | Content-Type esperado |
-| `timeoutMs` | sim | Timeout obrigatorio |
+| `headers` | nao | Headers fixos enviados ao transformador |
+| `timeoutMs` | nao | Timeout em milissegundos |
 
-### TransformConfig: External gRPC
+Contrato implementado:
+
+- Envia o payload atual como string no body.
+- `2xx` significa sucesso.
+- Body da resposta vira `Payload::Text` e segue para o target.
+- Status nao `2xx`, erro de rede ou timeout falha a pipeline antes do target.
+
+### TransformConfig: gRPC
 
 ```yaml
 transform:
@@ -706,16 +710,16 @@ Campos:
 | `allowedContentTypes` | nao | Content types de arquivo permitidos |
 | `requiredFields` | nao | Campos form obrigatorios |
 
-### ValidationConfig: External HTTP
+### ValidationConfig: HTTP
 
 ```yaml
 validation:
   steps:
-    - engine: external-http
+    - engine: http
       url: https://validator.example.com/orders
       method: POST
-      requestContentType: application/json
-      successStatus: 2xx
+      headers:
+        x-validator: orders
       timeoutMs: 2000
 ```
 
@@ -723,14 +727,19 @@ Campos:
 
 | Campo | Obrigatorio | Descricao |
 | --- | --- | --- |
-| `engine` | sim | `external-http` |
+| `engine` | sim | `http` |
 | `url` | sim | Endpoint externo |
 | `method` | nao | Metodo; padrao `POST` |
-| `requestContentType` | nao | Content-Type enviado |
-| `successStatus` | nao | Padrao `2xx` |
-| `timeoutMs` | sim | Timeout obrigatorio |
+| `headers` | nao | Headers fixos enviados ao validador |
+| `timeoutMs` | nao | Timeout em milissegundos |
 
-### ValidationConfig: External gRPC
+Contrato implementado:
+
+- Envia o payload atual como string no body.
+- Somente `200 OK` significa payload valido.
+- Qualquer outro status, erro de rede ou timeout rejeita o payload e impede o target.
+
+### ValidationConfig: gRPC
 
 ```yaml
 validation:
@@ -900,7 +909,7 @@ Futuro:
 
 ```yaml
 transform:
-  engine: external-http
+  engine: http
   url: https://transformer.example.com/events
   timeoutMs: 3000
 ```
@@ -920,12 +929,11 @@ Para HTTP:
 
 ```yaml
 transform:
-  engine: external-http
+  engine: http
   url: https://transformer.example.com/orders
   method: POST
-  mode: string
-  requestContentType: text/plain
-  responseContentType: text/plain
+  headers:
+    x-transformer: orders
   timeoutMs: 3000
 ```
 
@@ -1045,7 +1053,7 @@ validation:
 | `jsonschema` | Validar payload JSON estruturalmente |
 | `regex` | Validar payload texto |
 | `multipart` | Validar campos/arquivo em multipart |
-| `external-http` | Validar chamando endpoint HTTP externo; sucesso por status |
+| `http` | Validar chamando endpoint HTTP externo; sucesso por status |
 | `external-grpc` | Validar chamando servico gRPC externo; sucesso por status |
 
 Futuro:
@@ -1119,18 +1127,18 @@ Validacao externa deve ter um contrato simples.
 Para HTTP:
 
 - Postio envia o payload para um endpoint HTTP.
-- Qualquer status `2xx` significa valido.
-- Qualquer status fora de `2xx`, timeout ou erro de rede significa invalido.
+- Somente status `200 OK` significa valido.
+- Qualquer outro status, timeout ou erro de rede significa invalido.
 - O body da resposta nao e interpretado.
 
 ```yaml
 validation:
   steps:
-    - engine: external-http
+    - engine: http
       url: https://validator.example.com/orders
       method: POST
-      requestContentType: application/json
-      successStatus: 2xx
+      headers:
+        x-validator: orders
       timeoutMs: 2000
 ```
 
@@ -1786,7 +1794,7 @@ core runtime
   conhece traits: SourceFactory, TargetFactory, TransformEngine, ValidationEngine
 
 adapters
-  implementam traits: http, sqs, sns, s3, amqp, kafka, template, external-http, external-grpc
+  implementam traits: http, sqs, sns, s3, amqp, kafka, template, external-grpc
 ```
 
 ### Source Plugin Contract
@@ -1886,9 +1894,8 @@ Exemplo de transform externo:
 
 ```yaml
 transform:
-  engine: external-http
+  engine: http
   url: https://transformer.example.com/orders
-  mode: string
   timeoutMs: 3000
 ```
 
@@ -1933,9 +1940,8 @@ Exemplo de validacao externa:
 ```yaml
 validation:
   steps:
-    - engine: external-http
+    - engine: http
       url: https://validator.example.com/orders
-      successStatus: 2xx
       timeoutMs: 2000
 ```
 
@@ -2437,13 +2443,13 @@ transform:
       payload: "{{ body }}"
 ```
 
-### Fase 7: External Transform HTTP
+### Fase 7: Transform HTTP
 
-- Implementar `external-http`.
-- Contrato string in/string out.
-- `2xx` significa sucesso.
-- Body da resposta vira payload transformado.
-- `timeoutMs` obrigatorio.
+- `[x]` Implementar `http`.
+- `[x]` Contrato string in/string out.
+- `[x]` `2xx` significa sucesso.
+- `[x]` Body da resposta vira payload transformado.
+- `[x]` `timeoutMs` opcional em milissegundos.
 
 ### Fase 8: External Transform gRPC
 
