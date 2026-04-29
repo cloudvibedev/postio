@@ -13,9 +13,7 @@ pub use source::{
 pub use target::{
     HttpTargetConfig, RetryBackoffConfig, SqsTargetConfig, TargetConfig, TargetRetryConfig,
 };
-pub use transform::{
-    RhaiTransformConfig, TemplateTransformConfig, TransformConfig, TransformTemplateOutput,
-};
+pub use transform::{TemplateTransformConfig, TransformConfig, TransformTemplateOutput};
 pub use validate::{JsonSchemaValidateConfig, ValidateConfig};
 
 #[derive(Debug, Clone, Deserialize)]

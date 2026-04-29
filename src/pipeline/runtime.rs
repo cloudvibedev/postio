@@ -18,14 +18,13 @@ use crate::{
         config::{
             HttpCompletionRule, PipelineConfig, RetryBackoffConfig, SourceConfig,
             SqsCompletionAction, SqsCompletionRule, SqsDeadLetterConfig, TargetConfig,
-            TargetRetryConfig,
+            TargetRetryConfig, TransformConfig,
         },
         model::{
             CompletionResponse, MessageMetadata, Payload, PipelineFailure, PipelineMessage,
             PipelineResult, SourceContext, TargetRequestOverrides, TargetResponse, TraceContext,
         },
         resources::PipelineResources,
-        transform::PipelineTransformer,
         validation::PipelineValidator,
     },
 };
@@ -50,8 +49,6 @@ impl PipelineRuntime {
 
         let validator = PipelineValidator::compile(config.validate.clone())
             .expect("pipeline validator should be valid before runtime startup");
-        let transformer = PipelineTransformer::compile(config.transform.clone())
-            .expect("pipeline transformer should be valid before runtime startup");
 
         tokio::spawn(run_decode_worker(input_rx, validate_tx));
         tokio::spawn(run_validate_worker(
@@ -63,8 +60,7 @@ impl PipelineRuntime {
         tokio::spawn(run_transform_worker(
             transform_rx,
             target_tx,
-            completion_tx.clone(),
-            transformer,
+            config.transform.clone(),
         ));
         tokio::spawn(run_target_worker(
             target_rx,
@@ -233,47 +229,25 @@ async fn run_validate_worker(
 async fn run_transform_worker(
     mut rx: mpsc::Receiver<PipelineMessage>,
     tx: mpsc::Sender<PipelineMessage>,
-    completion_tx: mpsc::Sender<PipelineResult>,
-    transformer: PipelineTransformer,
+    transform: Option<TransformConfig>,
 ) {
-    let engine = transformer.engine_name();
+    let engine = match transform.as_ref() {
+        Some(TransformConfig::Template(_)) => "template",
+        None => "noop",
+    };
     while let Some(mut message) = rx.recv().await {
         let span = message.trace.child_span(info_span!(
             "postio.pipeline.transform.request",
             pipeline.id = %message.pipeline_id,
             request.id = %message.id,
-            engine = engine,
-            result.status = tracing::field::Empty,
-            error.kind = tracing::field::Empty
+            engine = engine
         ));
         async {
-            match apply_transform(&transformer, &mut message) {
-                Ok(()) => {
-                    tracing::Span::current().record("result.status", "accepted");
-                    if tx.send(message).await.is_err() {
-                        warn!("pipeline target channel closed");
-                    }
-                }
-                Err(error) => {
-                    tracing::Span::current().record("result.status", "failed");
-                    tracing::Span::current().record("error.kind", "transform_failed");
-                    error!(
-                        %error,
-                        pipeline.id = %message.pipeline_id,
-                        request.id = %message.id,
-                        "pipeline transform failed"
-                    );
-                    if completion_tx
-                        .send(PipelineResult {
-                            message,
-                            target: Err(PipelineFailure::Transform(error.to_string())),
-                        })
-                        .await
-                        .is_err()
-                    {
-                        warn!("pipeline completion channel closed");
-                    }
-                }
+            if let Some(transform) = transform.as_ref() {
+                apply_transform(transform, &mut message);
+            }
+            if tx.send(message).await.is_err() {
+                warn!("pipeline target channel closed");
             }
         }
         .instrument(span)
@@ -281,10 +255,9 @@ async fn run_transform_worker(
     }
 }
 
-fn apply_transform(transform: &PipelineTransformer, message: &mut PipelineMessage) -> Result<()> {
+fn apply_transform(transform: &TransformConfig, message: &mut PipelineMessage) {
     match transform {
-        PipelineTransformer::Noop => {}
-        PipelineTransformer::Template(config) => {
+        TransformConfig::Template(config) => {
             let ctx = template_context(message);
             if let Some(body) = &config.output.body {
                 message.payload = Payload::from_template_value(render_value(body, &ctx));
@@ -317,11 +290,7 @@ fn apply_transform(transform: &PipelineTransformer, message: &mut PipelineMessag
                 message.target.delay_seconds = Some(delay_seconds);
             }
         }
-        PipelineTransformer::Rhai(transformer) => {
-            transformer.transform(message)?.apply_to(message);
-        }
     }
-    Ok(())
 }
 
 fn render_template_string(value: &serde_json::Value, ctx: &TemplateContext) -> String {
@@ -462,22 +431,6 @@ async fn run_completion_worker(
                     },
                 ),
                 Err(PipelineFailure::Target(error)) => (
-                    CompletionKind::TargetFailure,
-                    CompletionResponse {
-                        pipeline_id: result.message.pipeline_id.clone(),
-                        request_id: result.message.id.to_string(),
-                        status: "failed".to_string(),
-                        target_type: None,
-                        target_status_code: None,
-                        body: None,
-                        message_id: None,
-                        error: Some(error),
-                        details: None,
-                        http_status_code: None,
-                        http_body: None,
-                    },
-                ),
-                Err(PipelineFailure::Transform(error)) => (
                     CompletionKind::TargetFailure,
                     CompletionResponse {
                         pipeline_id: result.message.pipeline_id.clone(),

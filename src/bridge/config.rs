@@ -9,7 +9,6 @@ use crate::pipeline::{
         PipelineConfig, RetryBackoffConfig, SourceConfig, SqsCompletionAction, TargetConfig,
         TargetRetryConfig,
     },
-    transform::PipelineTransformer,
     validation::PipelineValidator,
 };
 
@@ -215,8 +214,6 @@ fn validate_pipeline(pipeline: &PipelineConfig) -> Result<()> {
 
     PipelineValidator::compile(pipeline.validate.clone())
         .with_context(|| format!("pipeline {} validate config is invalid", pipeline.id))?;
-    PipelineTransformer::compile(pipeline.transform.clone())
-        .with_context(|| format!("pipeline {} transform config is invalid", pipeline.id))?;
 
     Ok(())
 }
@@ -436,75 +433,13 @@ pipeline:
         let config = validate_config(config).expect("config is valid");
         let pipeline = config.pipeline.expect("pipeline");
         let transform = pipeline.transform.expect("transform");
-        let crate::pipeline::config::TransformConfig::Template(config) = transform else {
-            panic!("expected template transform");
-        };
+        let crate::pipeline::config::TransformConfig::Template(config) = transform;
         assert_eq!(
             config.output.headers.expect("headers")["x-event-type"],
             "{{ body.type }}"
         );
         assert_eq!(config.output.delay_seconds, Some(2));
         assert!(config.output.body.expect("body").is_object());
-    }
-
-    #[test]
-    fn parses_pipeline_rhai_transform() {
-        let config: BridgeConfig = serde_yaml::from_str(
-            r#"
-pipeline:
-  id: http-to-sqs
-  source:
-    type: http
-    path: /orders/{tenant}
-  transform:
-    engine: rhai
-    script: |
-      #{
-        body: #{
-          tenant: input.params.tenant,
-          payload: input.body
-        }
-      }
-  target:
-    type: sqs
-    queue: orders-output
-"#,
-        )
-        .expect("config parses");
-
-        let config = validate_config(config).expect("config is valid");
-        let pipeline = config.pipeline.expect("pipeline");
-        let transform = pipeline.transform.expect("transform");
-        let crate::pipeline::config::TransformConfig::Rhai(config) = transform else {
-            panic!("expected rhai transform");
-        };
-        assert!(config.script.contains("input.params.tenant"));
-    }
-
-    #[test]
-    fn rejects_invalid_rhai_transform() {
-        let config: BridgeConfig = serde_yaml::from_str(
-            r#"
-pipeline:
-  id: http-to-sqs
-  source:
-    type: http
-    path: /orders
-  transform:
-    engine: rhai
-    script: "let = invalid"
-  target:
-    type: sqs
-    queue: orders-output
-"#,
-        )
-        .expect("config parses");
-
-        let error = validate_config(config).expect_err("invalid rhai transform is rejected");
-        assert!(
-            error.to_string().contains("transform config is invalid"),
-            "{error}"
-        );
     }
 
     #[test]

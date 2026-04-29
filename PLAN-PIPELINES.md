@@ -46,7 +46,7 @@ Exemplos desejados:
 - O core deve depender de traits/contratos, nao de implementacoes concretas.
 - v1 inicial executa uma unica pipeline por processo.
 - Multipipeline no mesmo processo fica como possibilidade futura, nao como requisito inicial.
-- Comecar simples com Rhai antes de considerar Deno/JavaScript.
+- Comecar simples com `jsonschema`, `template` e integracoes HTTP antes de considerar engines embarcadas.
 
 ## Modelo Conceitual
 
@@ -95,33 +95,18 @@ pipeline:
           type: number
 
   transform:
-    engine: rhai
-    script: |
-      #{
-        body: #{
-          eventType: "order.received",
-          payload: input.body,
-          requestId: context.requestId
-        },
-        attributes: #{
-          source: "http"
-        }
-      }
+    engine: template
+    output:
+      body:
+        eventType: order.received
+        payload: "{{ body }}"
+        requestId: "{{ context.requestId }}"
+      attributes:
+        source: http
 
   target:
     type: sqs
     queue: orders-events
-
-  responseTransform:
-    engine: rhai
-    script: |
-      #{
-        status: 202,
-        body: #{
-          ok: true,
-          messageId: target.messageId
-        }
-      }
 ```
 
 ```yaml
@@ -140,44 +125,23 @@ pipeline:
     steps:
       - engine: jsonschema
         schemaRef: ./schemas/order.schema.json
-      - engine: rhai
-        script: |
-          if input.body.total <= 0 {
-            throw "total must be greater than zero";
-          }
-          true
 
   transform:
-    engine: rhai
-    script: |
-      let order = input.body;
-
-      #{
-        method: "POST",
-        url: "https://api.example.com/orders",
-        headers: #{
-          "content-type": "application/json",
-          "x-source": "postio"
-        },
-        body: #{
-          id: order.id,
-          total: order.total,
-          receivedAt: context.timestamp
-        }
-      }
+    engine: template
+    output:
+      method: POST
+      url: https://api.example.com/orders
+      headers:
+        content-type: application/json
+        x-source: postio
+      body:
+        id: "{{ body.id }}"
+        total: "{{ body.total }}"
+        sourceType: "{{ context.sourceType }}"
 
   target:
     type: http
     timeoutMs: 5000
-
-  responseTransform:
-    engine: rhai
-    script: |
-      if target.status >= 200 && target.status < 300 {
-        #{ ack: true }
-      } else {
-        #{ ack: false, retry: true }
-      }
 ```
 
 ## Compatibilidade Com A v0
@@ -612,35 +576,6 @@ Regras:
 - Se a string inteira e template, preserva tipo JSON quando possivel.
 - Se template esta embutido em outra string, resultado e string.
 
-### TransformConfig: Rhai
-
-```yaml
-transform:
-  engine: rhai
-  script: |
-    #{
-      body: #{
-        eventType: "order.created",
-        payload: input.body
-      }
-    }
-```
-
-Campos:
-
-| Campo | Obrigatorio | Descricao |
-| --- | --- | --- |
-| `engine` | sim | `rhai` |
-| `script` | sim | Script inline |
-| `scriptRef` | nao | Planejado para etapa futura |
-
-Contrato implementado:
-
-- O script recebe `input.body`, `input.headers`, `input.params`, `input.query` e `input.context`.
-- O script deve retornar um objeto com `body`, `headers`, `method`, `url`, `query`, `attributes` e/ou `delaySeconds`.
-- Scripts sao compilados no startup e o AST fica cacheado no runtime.
-- O engine inicial usa `max_operations=100000` e nao registra funcoes de I/O, rede ou filesystem.
-
 ### TransformConfig: External HTTP
 
 ```yaml
@@ -746,27 +681,6 @@ Campos:
 | `engine` | sim | `jsonschema` |
 | `schema` | condicional | Schema inline |
 | `schemaRef` | condicional | Referencia para schema |
-
-### ValidationConfig: Rhai
-
-```yaml
-validation:
-  steps:
-    - engine: rhai
-      script: |
-        if input.body.total <= 0 {
-          throw "total must be greater than zero";
-        }
-        true
-```
-
-Campos:
-
-| Campo | Obrigatorio | Descricao |
-| --- | --- | --- |
-| `engine` | sim | `rhai` |
-| `script` | condicional | Script inline |
-| `scriptRef` | condicional | Caminho/referencia para script |
 
 ### ValidationConfig: Multipart
 
@@ -970,35 +884,25 @@ Grava objeto em S3.
 
 ## Transformacao
 
-### Recomendacao Inicial: Rhai
-
-Rhai deve ser a primeira engine de transformacao.
-
-Motivos:
-
-- Feito para scripting embutido em Rust.
-- Baixo peso operacional.
-- Mais simples de controlar e limitar.
-- Bom o suficiente para transformacoes de JSON, headers, atributos e responses.
-- Menor risco do que embutir V8/Deno na v1.
-
 ### Engine Plugavel
 
 A config deve nascer preparada para multiplas engines:
 
 ```yaml
 transform:
-  engine: rhai
-  script: ./transforms/order.rhai
+  engine: template
+  output:
+    body:
+      event: "{{ body.event }}"
 ```
 
 Futuro:
 
 ```yaml
 transform:
-  engine: javascript
-  runtime: deno
-  script: ./transforms/order.ts
+  engine: external-http
+  url: https://transformer.example.com/events
+  timeoutMs: 3000
 ```
 
 ### Transformacao Externa
@@ -1129,13 +1033,6 @@ validation:
 
     - engine: jsonschema
       schemaRef: ./schemas/order.schema.json
-
-    - engine: rhai
-      script: |
-        if input.body.total <= 0 {
-          throw "total must be greater than zero";
-        }
-        true
 ```
 
 `validate` pode ser um atalho para um unico step. `validation.steps` deve ser o formato mais explicito para multiplas validacoes.
@@ -1146,7 +1043,6 @@ validation:
 | --- | --- |
 | `contentType` | Validar tipo de entrada esperado |
 | `jsonschema` | Validar payload JSON estruturalmente |
-| `rhai` | Validar regra customizada simples |
 | `regex` | Validar payload texto |
 | `multipart` | Validar campos/arquivo em multipart |
 | `external-http` | Validar chamando endpoint HTTP externo; sucesso por status |
@@ -1299,38 +1195,29 @@ O resultado do `requestTransform` deve ser convertido para um request canonico d
 
 Exemplo para HTTP:
 
-```rhai
-#{
-  method: "POST",
-  url: "https://api.example.com/orders",
-  headers: #{
-    "content-type": "application/json"
-  },
-  body: input.body
-}
+```yaml
+method: POST
+url: https://api.example.com/orders
+headers:
+  content-type: application/json
+body:
+  "{{ body }}"
 ```
 
 Exemplo para SQS:
 
-```rhai
-#{
-  body: input.body,
-  attributes: #{
-    source: "postio"
-  }
-}
+```yaml
+body: "{{ body }}"
+attributes:
+  source: postio
 ```
 
 Resultado do `responseTransform`:
 
-```rhai
-#{
-  ack: true,
-  status: 202,
-  body: #{
-    ok: true
-  }
-}
+```yaml
+status: 202
+body:
+  ok: true
 ```
 
 ## Ack, Retry E Resposta
@@ -1805,7 +1692,7 @@ RuntimeResources
   HttpClient
     reqwest::Client
   TransformRegistry
-    compiled Rhai ASTs
+    template/external transform engines
   ResourceCache
     topic ARNs
     queue URLs
@@ -1872,14 +1759,12 @@ src/
     s3.rs
   transforms/
     mod.rs
-    rhai.rs
   validation/
     mod.rs
     content_type.rs
     external_grpc.rs
     external_http.rs
     jsonschema.rs
-    rhai.rs
   codecs/
     json.rs
     text.rs
@@ -1901,7 +1786,7 @@ core runtime
   conhece traits: SourceFactory, TargetFactory, TransformEngine, ValidationEngine
 
 adapters
-  implementam traits: http, sqs, sns, s3, amqp, kafka, rhai, javascript, external-http, external-grpc
+  implementam traits: http, sqs, sns, s3, amqp, kafka, template, external-http, external-grpc
 ```
 
 ### Source Plugin Contract
@@ -1996,15 +1881,6 @@ Checklist para nova engine:
 - Integrar tracing.
 - Criar testes de contrato.
 - Documentar exemplos.
-
-Exemplo futuro:
-
-```yaml
-transform:
-  engine: javascript
-  runtime: deno
-  script: ./transforms/order.ts
-```
 
 Exemplo de transform externo:
 
@@ -2246,7 +2122,6 @@ Fora da primeira entrega v1:
 
 - Targets `sns` e `s3` no novo motor.
 - Transform template.
-- Transform Rhai.
 - External transform HTTP/gRPC.
 - Validation real.
 - Retry/backoff avancado.
@@ -2562,17 +2437,7 @@ transform:
       payload: "{{ body }}"
 ```
 
-### Fase 7: Transform Rhai
-
-- `[x]` Adicionar engine Rhai.
-- `[x]` Compilar scripts no startup.
-- `[x]` Cachear AST.
-- `[x]` Definir contrato de entrada e saida.
-- `[x]` Adicionar limite inicial de operacoes.
-- `[ ]` Definir funcoes utilitarias seguras.
-- `[ ]` Suportar `scriptRef`.
-
-### Fase 8: External Transform HTTP
+### Fase 7: External Transform HTTP
 
 - Implementar `external-http`.
 - Contrato string in/string out.
@@ -2580,7 +2445,7 @@ transform:
 - Body da resposta vira payload transformado.
 - `timeoutMs` obrigatorio.
 
-### Fase 9: External Transform gRPC
+### Fase 8: External Transform gRPC
 
 - Implementar `external-grpc`.
 - Contrato string in/string out.
@@ -2588,12 +2453,11 @@ transform:
 - Response payload vira payload transformado.
 - `timeoutMs` obrigatorio.
 
-### Fase 10: Validation Step
+### Fase 9: Validation Step
 
 - Adicionar etapa oficial `validate` / `validation.steps`.
 - Implementar engine `contentType`.
 - Implementar engine `jsonschema`.
-- Planejar engine `rhai` para regras customizadas.
 - Definir `ValidationResult`.
 - Definir `onValidationFailure`.
 - Garantir que target nao seja chamado quando validacao falhar.
@@ -2609,9 +2473,9 @@ Status da primeira fatia:
 - `[x]` `source.completion.onValidationFailure` para HTTP e SQS.
 - `[ ]` `schemaRef`.
 - `[ ]` `validation.steps`.
-- `[ ]` Engines `contentType`, `rhai`, `http` e `grpc`.
+- `[ ]` Engines `contentType`, `http` e `grpc`.
 
-### Fase 11: Response Transform E Completion
+### Fase 10: Response Transform E Completion
 
 - Permitir manipular resposta do target.
 - Decidir HTTP response ou SQS ack/retry.
@@ -2624,19 +2488,16 @@ Status:
 - `[x]` `deadLetter` SQS envia para DLQ e so depois deleta a mensagem original.
 - `[ ]` `responseTransform` dedicado para manipular resposta do target antes do completion.
 
-### Fase 12: Hardening
+### Fase 11: Hardening
 
 - Validacao forte de config.
 - Testes de contrato por source/target.
 - Observabilidade completa.
-- Protecao contra scripts caros.
 - Documentacao completa.
 
 ## Decisoes Em Aberto
 
 - Nome final da nova secao: `pipelines`, `flows` ou `bridges`.
-- Rhai inline versus arquivo externo no config.
-- Como empacotar scripts em Kubernetes: ConfigMap, Secret ou imagem.
 - Como lidar com secrets em transforms.
 - Qual limite maximo de payload por source.
 - Como versionar config v0/v1.
@@ -2645,6 +2506,6 @@ Status:
 
 ## Recomendacao Atual
 
-Seguir com Rhai na primeira versao de pipelines e manter a arquitetura preparada para engines futuras.
+Manter a primeira versao de pipelines sem engine embarcada de script. O escopo ativo fica em `jsonschema`, `template` e integracoes HTTP externas quando transformacoes customizadas forem necessarias.
 
-Deno/JavaScript deve ser considerado depois, quando houver necessidade real de TypeScript, bibliotecas externas ou plugin runtime mais poderoso.
+Qualquer engine embarcada deve ficar fora do roadmap ativo ate existir uma necessidade concreta de produto.

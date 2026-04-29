@@ -178,7 +178,7 @@ Decisao:
 Notas:
 
 - Primeira fatia implementada com JSON Schema inline em `validate.schema`.
-- `schemaRef`, `validation.steps`, `validate.engine: rhai`, `validate.engine: http` e `validate.engine: grpc` continuam fora desta entrega.
+- `schemaRef`, `validation.steps`, `validate.engine: http` e `validate.engine: grpc` continuam fora desta entrega.
 - HTTP source retorna `422 Unprocessable Entity` com `status: rejected` quando a validacao falha.
 - SQS source nao deleta a mensagem quando a validacao falha.
 
@@ -217,21 +217,14 @@ Notas:
 
 ### Transformacao Avancada
 
-- `[x]` Revisar no plano o escopo minimo do `transform.engine: rhai`.
-- `[x]` Definir contrato de entrada e saida do Rhai antes de implementar.
-- `[x]` Definir limites de seguranca do Rhai: limite de operacoes, sem funcoes de I/O/rede/filesystem e acesso restrito a `input`.
-- `[x]` Implementar Rhai somente depois de fechar `template` e `jsonschema`.
-- `[x]` Compilar scripts Rhai no startup e cachear AST no runtime.
-- `[x]` Criar testes de parsing/validacao de config Rhai.
-- `[x]` Criar teste `HTTP -> SQS` com `transform.engine: rhai`.
-- `[ ]` Definir funcoes utilitarias seguras para Rhai.
-- `[ ]` Suportar `scriptRef` para script externo.
+- `[x]` Remover engine embarcada de script do escopo ativo.
+- `[x]` Manter somente `transform.engine: template` no runtime atual.
+- `[ ]` Planejar `transform.engine: external-http` como proxima opcao para transformacao customizada.
 
 Notas:
 
-- Contrato atual do Rhai recebe `input.body`, `input.headers`, `input.params`, `input.query` e `input.context`.
-- Retorno atual aceita `body`, `headers`, `method`, `url`, `query`, `attributes` e `delaySeconds`.
-- Falha de transform interrompe a pipeline antes do target e segue para completion como `status=failed`.
+- Engine embarcada de script foi removida do projeto e do plano ativo por decisao de produto.
+- O escopo atual fica em `validate.engine: jsonschema`, `transform.engine: template` e integracoes HTTP/SQS.
 
 ## Rotas Temporarias De Validacao
 

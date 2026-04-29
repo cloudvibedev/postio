@@ -4,7 +4,7 @@ Postio e uma API de injestao de dados configuravel. Ela recebe chamadas HTTP `PO
 
 O objetivo da v0 e ser simples de operar: uma aplicacao, um arquivo YAML/JSON, varias rotas, varios destinos.
 
-A evolucao v1 adiciona um modo de pipeline unica por processo. Nessa primeira implementacao, a pipeline suporta entradas e saidas `http` e `sqs`, com etapas internas de decode, validate noop/jsonschema, transform template/rhai opcional, target e completion.
+A evolucao v1 adiciona um modo de pipeline unica por processo. Nessa primeira implementacao, a pipeline suporta entradas e saidas `http` e `sqs`, com etapas internas de decode, validate noop, transform template opcional, target e completion.
 
 ## Sumario
 
@@ -77,7 +77,7 @@ O bloco `pipeline` executa uma unica pipeline por processo/deployment Postio. El
 Fluxo interno atual:
 
 ```text
-source -> decode -> validate(noop/jsonschema) -> transform(noop/template/rhai) -> target -> completion
+source -> decode -> validate(noop/jsonschema) -> transform(noop/template) -> target -> completion
 ```
 
 Escopo implementado nesta versao:
@@ -87,7 +87,7 @@ Escopo implementado nesta versao:
 - Target `http`: envia o payload para um endpoint externo.
 - Target `sqs`: envia o payload para uma fila SQS.
 - Validate: retorna valido quando ausente; quando configurado com `engine: jsonschema`, valida o payload antes do transform e bloqueia o target em caso de rejeicao.
-- Transform: retorna o payload original quando ausente; quando configurado com `engine: template` ou `engine: rhai`, pode montar body, headers, query, atributos e outros overrides de saida.
+- Transform: retorna o payload original quando ausente; quando configurado com `engine: template`, pode montar body, headers, query, atributos e outros overrides de saida.
 - Completion: pode ser configurado em `source.completion`. HTTP customiza status/body da resposta; SQS decide `ack`, `retry`, `drop` ou `deadLetter`.
 
 ### Schema raiz
@@ -131,7 +131,7 @@ pipeline:
 | `source` | sim | - | Entrada da pipeline. Nesta fase pode ser `http` ou `sqs`. |
 | `source.completion` | nao | politica default | Politica de finalizacao do source. |
 | `validate` | nao | noop | Validacao opcional antes do transform. Nesta fase suporta `engine: jsonschema` com schema inline. |
-| `transform` | nao | noop | Transformacao opcional antes do target. Nesta fase suporta `engine: template` e `engine: rhai`. |
+| `transform` | nao | noop | Transformacao opcional antes do target. Nesta fase suporta `engine: template`. |
 | `target` | sim | - | Saida da pipeline. Nesta fase pode ser `http` ou `sqs`. |
 
 `source.completion` e opcional. Quando ausente, a politica default continua ativa por source.
@@ -146,7 +146,7 @@ Cada resource documenta os papeis que suporta dentro da pipeline:
 
 O completion pertence ao `source`, porque e ele que decide como responder, confirmar ou liberar retry para a origem. Ja o retry de envio pertence ao `target`, como `target.retry`, porque controla tentativas de entrega para o destino.
 
-No codigo, os schemas de pipeline ficam em `src/pipeline/config/`, separados por familia: `source.rs`, `target.rs`, `transform.rs` e `validate.rs`. As structs continuam separadas por resource e papel, como `HttpSourceConfig`, `HttpSourceCompletionConfig`, `HttpTargetConfig`, `SqsSourceConfig`, `SqsSourceCompletionConfig`, `SqsDeadLetterConfig`, `SqsTargetConfig`, `TemplateTransformConfig`, `RhaiTransformConfig` e `ValidateConfig`.
+No codigo, os schemas de pipeline ficam em `src/pipeline/config/`, separados por familia: `source.rs`, `target.rs`, `transform.rs` e `validate.rs`. As structs continuam separadas por resource e papel, como `HttpSourceConfig`, `HttpSourceCompletionConfig`, `HttpTargetConfig`, `SqsSourceConfig`, `SqsSourceCompletionConfig`, `SqsDeadLetterConfig`, `SqsTargetConfig`, `TemplateTransformConfig` e `ValidateConfig`.
 
 ### HTTP
 
@@ -619,77 +619,6 @@ Request enviado ao HTTP target:
   }
 }
 ```
-
-### Transform Rhai
-
-O transform `rhai` executa um script compilado no startup. O script recebe `input` e deve retornar um objeto com os mesmos campos suportados por `transform.output`.
-
-```yaml
-pipeline:
-  id: http-to-sqs-rhai
-  source:
-    type: http
-    path: /orders/{tenant}
-  transform:
-    engine: rhai
-    script: |
-      #{
-        body: #{
-          event: input.body.event,
-          tenant: input.params.tenant,
-          source: input.query.source,
-          sourceType: input.context.sourceType,
-          original: input.body
-        },
-        attributes: #{
-          event: input.body.event,
-          tenant: input.params.tenant,
-          priority: input.body.priority
-        }
-      }
-  target:
-    type: sqs
-    queue: orders-output
-```
-
-Campos de `transform`:
-
-| Propriedade | Obrigatoria | Padrao | Descricao |
-| --- | --- | --- | --- |
-| `engine` | sim | - | Deve ser `rhai`. |
-| `script` | sim | - | Script Rhai inline. O script e compilado durante o startup. |
-
-Raizes disponiveis em `input`:
-
-| Raiz | Descricao |
-| --- | --- |
-| `input.body` | Payload decodificado. JSON continua navegavel, por exemplo `input.body.order.id`. |
-| `input.headers` | Headers recebidos da fonte HTTP. |
-| `input.params` | Params extraidos do path HTTP. |
-| `input.query` | Query string recebida pela fonte HTTP. |
-| `input.context.requestId` | ID da mensagem na pipeline. |
-| `input.context.pipelineId` | ID da pipeline. |
-| `input.context.attempt` | Tentativa atual. |
-| `input.context.sourceType` | Tipo da fonte, como `http` ou `sqs`. |
-
-Campos aceitos no retorno:
-
-| Campo | Descricao |
-| --- | --- |
-| `body` | Novo payload enviado ao target. |
-| `headers` | Headers dinamicos enviados ao target HTTP. |
-| `method` | Metodo dinamico do target HTTP. |
-| `url` | URL dinamica do target HTTP. |
-| `query` | Query string dinamica enviada ao target HTTP. |
-| `attributes` | Atributos dinamicos enviados ao SQS como `String`. |
-| `delaySeconds` | Delay dinamico usado no envio SQS. |
-
-Limites iniciais:
-
-- O script precisa ser inline em `script`.
-- Scripts sao compilados no startup e rejeitam config invalida.
-- O runtime limita a execucao com `max_operations=100000`.
-- O engine nao registra funcoes de I/O, rede ou acesso ao sistema de arquivos.
 
 ### Exemplos de pipeline
 
