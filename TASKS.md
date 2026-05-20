@@ -19,11 +19,16 @@ Este arquivo acompanha as proximas tarefas praticas do Postio. Sempre revisar ju
 ## Ultima Atualizacao
 
 - Data: 2026-05-20.
-- Correcao local em andamento: rotas dinamicas de ingestao e pipeline agora ficam cobertas pela camada HTTP OpenTelemetry.
+- Correcao publicada em producao: rotas dinamicas de ingestao e pipeline agora ficam cobertas pela camada HTTP OpenTelemetry.
+- Imagem mais recente publicada: `ghcr.io/runvibe/postio:c841ec4f548a5e016145af0f68e0686c3a8c789d`.
+- Deploy validado em producao no cluster `autob-prd-app`, namespace `postio`.
 - Validacao local: teste `configured_ingest_route_includes_trace_context_response_header` confirmou `traceparent` nas respostas das rotas dinamicas.
 - Validacao local: `cargo build` e `cargo test` passaram apos a correcao.
+- Validacao em producao: request `POST /postio/sqs?source=codex-trace-check` retornou `202 Accepted` com `traceparent`.
+- Validacao em producao: trace `fb16d549553379c08dd653d8605b787d` chegou ao Tempo com `service.name=postio` e 8 spans.
+- Validacao em producao: Mimir registrou `traces_spanmetrics_calls_total{service_name="postio", http_request_method="POST", http_route="/postio/sqs", http_response_status_code="202"}`.
 - Deploy validado no cluster EKS `eks-autob-k8s`.
-- Imagem mais recente publicada: `ghcr.io/cloudvibedev/postio:45d93635cbf7f8862ad8ba841c7d2925bc063b99`.
+- Imagem anterior publicada: `ghcr.io/cloudvibedev/postio:45d93635cbf7f8862ad8ba841c7d2925bc063b99`.
 - Commit mais recente validado pelo Argo CD em `k8s-sandbox`: `987c6df46d38fd8e5ab0c8cba77f39b15febc1d9`.
 - Endpoints testados:
   - `http://gateway.sdx.autob/postio/pipeline/sqs`.
@@ -71,7 +76,7 @@ Este arquivo acompanha as proximas tarefas praticas do Postio. Sempre revisar ju
 - `[x]` Confirmar que os traces mostram tempo por etapa.
 - `[x]` Confirmar que erros de target aparecem no trace com contexto suficiente.
 - `[x]` Confirmar que rotas dinamicas de ingestao recebem `traceparent` na resposta quando OTEL esta habilitado.
-- `[~]` Publicar imagem com a correcao de cobertura OTEL das rotas dinamicas e validar no Grafana/Tempo de producao.
+- `[x]` Publicar imagem com a correcao de cobertura OTEL das rotas dinamicas e validar no Grafana/Tempo de producao.
 
 Notas:
 
