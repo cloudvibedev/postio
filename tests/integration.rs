@@ -335,6 +335,46 @@ async fn configured_ingest_route_dispatches_to_sink() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configured_ingest_route_includes_trace_context_response_header() {
+    let dispatcher = Arc::new(RecordingDispatcher::default());
+    let bridge_config = BridgeConfig {
+        routes: vec![RouteConfig {
+            id: "events".to_string(),
+            method: "POST".to_string(),
+            path: "/events/{topic}".to_string(),
+            sink: SinkConfig::Sns {
+                topic: Some("{{ params.topic }}".to_string()),
+                topic_arn: None,
+                subject: None,
+                message: None,
+                attributes: None,
+            },
+        }],
+        pipeline: None,
+    };
+    let router = setup_router_with_bridge_config(bridge_config, dispatcher).await;
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/events/orders")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"hello":"trace"}"#))
+                .expect("build request"),
+        )
+        .await
+        .expect("request failed");
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert!(
+        response.headers().contains_key("traceparent"),
+        "dynamic ingest routes must be covered by the OTEL HTTP middleware"
+    );
+    flush_telemetry().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multipart_ingest_route_extracts_form_fields_and_file() {
     let dispatcher = Arc::new(RecordingDispatcher::default());
     let bridge_config = BridgeConfig {

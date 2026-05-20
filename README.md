@@ -1385,6 +1385,8 @@ curl -X POST 'http://gateway.sdx.autob/postio/pipeline/template/http/acme?source
 
 Postio foi pensado para permitir acompanhar a operacao de ponta a ponta via traces.
 
+Com `OTEL_ENABLED=true`, a camada HTTP OpenTelemetry cobre tambem as rotas dinamicas declaradas em `routes[]` e a rota HTTP da `pipeline`. As respostas dessas rotas incluem `traceparent`, e os spans HTTP server carregam atributos semanticos como `http.request.method`, `http.route` e `http.response.status_code`, permitindo que dashboards APM agrupem throughput, latencia e erros por metodo e rota.
+
 ### Subindo stack local
 
 ```bash
@@ -1421,10 +1423,12 @@ URLs:
 - `route_id`
 - `sink_type`
 - `http.method`
+- `http.request.method`
 - `http.route`
 - `http.target`
 - `request.body_bytes`
 - `response.status_code`
+- `http.response.status_code`
 - `sink.status`
 - `aws.sns.message_id`
 - `aws.sqs.message_id`

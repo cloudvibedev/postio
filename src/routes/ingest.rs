@@ -69,10 +69,12 @@ async fn handle_ingest(
         route_id = %route_id,
         sink_type = %sink_type,
         http.method = "POST",
+        http.request.method = "POST",
         http.route = %route.path,
         http.target = %uri,
         request.body_bytes = request_body_bytes,
         response.status_code = tracing::field::Empty,
+        http.response.status_code = tracing::field::Empty,
         sink.status = tracing::field::Empty,
     );
 
@@ -135,6 +137,7 @@ async fn handle_ingest(
             StatusCode::ACCEPTED
         };
         tracing::Span::current().record("response.status_code", status.as_u16());
+        tracing::Span::current().record("http.response.status_code", status.as_u16());
         tracing::Span::current().record("sink.status", response.status.as_str());
         info!(
             http.status_code = status.as_u16(),

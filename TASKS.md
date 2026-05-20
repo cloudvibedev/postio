@@ -18,7 +18,10 @@ Este arquivo acompanha as proximas tarefas praticas do Postio. Sempre revisar ju
 
 ## Ultima Atualizacao
 
-- Data: 2026-04-28.
+- Data: 2026-05-20.
+- Correcao local em andamento: rotas dinamicas de ingestao e pipeline agora ficam cobertas pela camada HTTP OpenTelemetry.
+- Validacao local: teste `configured_ingest_route_includes_trace_context_response_header` confirmou `traceparent` nas respostas das rotas dinamicas.
+- Validacao local: `cargo build` e `cargo test` passaram apos a correcao.
 - Deploy validado no cluster EKS `eks-autob-k8s`.
 - Imagem mais recente publicada: `ghcr.io/cloudvibedev/postio:45d93635cbf7f8862ad8ba841c7d2925bc063b99`.
 - Commit mais recente validado pelo Argo CD em `k8s-sandbox`: `987c6df46d38fd8e5ab0c8cba77f39b15febc1d9`.
@@ -67,12 +70,15 @@ Este arquivo acompanha as proximas tarefas praticas do Postio. Sempre revisar ju
 - `[x]` Confirmar span `postio.pipeline.complete`.
 - `[x]` Confirmar que os traces mostram tempo por etapa.
 - `[x]` Confirmar que erros de target aparecem no trace com contexto suficiente.
+- `[x]` Confirmar que rotas dinamicas de ingestao recebem `traceparent` na resposta quando OTEL esta habilitado.
+- `[~]` Publicar imagem com a correcao de cobertura OTEL das rotas dinamicas e validar no Grafana/Tempo de producao.
 
 Notas:
 
 - Grafana `http://grafana.o11y.sdx.autob` respondeu com sucesso e permitiu consultar o datasource Tempo pelo proxy.
 - Validado em Grafana/Tempo que os spans internos ficam no mesmo trace apos atravessar channels/tasks Tokio.
 - Validado que `traceparent` recebido no HTTP e respeitado como parent do trace da pipeline.
+- Corrigido localmente que o middleware HTTP OTEL agora envolve tambem `routes[]` e `pipeline.source.http`, nao apenas rotas de sistema/docs.
 - Validado que falha de target registra `result.status=failed`, `error.kind=target_send_failed` e evento `pipeline target failed` no span `postio.pipeline.target.send`.
 
 Evidencia do caminho feliz:

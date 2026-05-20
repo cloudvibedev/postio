@@ -29,14 +29,6 @@ pub fn create_router(state: AppState, config: &AppConfig, bridge_config: &Bridge
 
     let api_router = api_router.merge(SwaggerUi::new("/docs").url("/openapi.json", api));
 
-    let api_router = if config.otel_enabled {
-        api_router
-            .layer(OtelInResponseLayer::default())
-            .layer(OtelAxumLayer::default().filter(|path| path != "/health"))
-    } else {
-        api_router
-    };
-
     let api_router = api_router
         .merge(ingest::router(bridge_config))
         .merge(pipeline::router(bridge_config));
@@ -44,6 +36,14 @@ pub fn create_router(state: AppState, config: &AppConfig, bridge_config: &Bridge
     let api_router = api_router
         .layer(cors::build_cors_layer(&config.cors, None))
         .layer(RequestBodyLimitLayer::new(config.body_limit_bytes));
+
+    let api_router = if config.otel_enabled {
+        api_router
+            .layer(OtelInResponseLayer::default())
+            .layer(OtelAxumLayer::default().filter(|path| path != "/health"))
+    } else {
+        api_router
+    };
 
     api_router.with_state(state)
 }

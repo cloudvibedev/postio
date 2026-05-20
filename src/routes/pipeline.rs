@@ -31,6 +31,7 @@ pub fn router(config: &BridgeConfig) -> Router<AppState> {
     }
 
     let pipeline_id = Arc::new(pipeline.id.clone());
+    let source_path = Arc::new(source.path.clone());
     Router::new().route(
         &source.path,
         post(move |state, params, query, uri, headers, body| {
@@ -42,6 +43,7 @@ pub fn router(config: &BridgeConfig) -> Router<AppState> {
                 headers,
                 body,
                 Arc::clone(&pipeline_id),
+                Arc::clone(&source_path),
             )
         }),
     )
@@ -55,6 +57,7 @@ async fn handle_pipeline_http(
     headers: HeaderMap,
     body: Bytes,
     pipeline_id: Arc<String>,
+    source_path: Arc<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let runtime = state
         .pipeline()
@@ -64,9 +67,12 @@ async fn handle_pipeline_http(
         "postio.pipeline.http.request",
         pipeline.id = %pipeline_id,
         http.method = "POST",
+        http.request.method = "POST",
+        http.route = %source_path,
         http.target = %uri,
         request.body_bytes = request_body_bytes,
         response.status_code = tracing::field::Empty,
+        http.response.status_code = tracing::field::Empty,
         pipeline.status = tracing::field::Empty,
     );
     let _ = span.set_parent(extract_trace_context(&headers));
@@ -86,6 +92,7 @@ async fn handle_pipeline_http(
             .clone()
             .unwrap_or_else(|| serde_json::to_value(&response).expect("completion serializes"));
         tracing::Span::current().record("response.status_code", status.as_u16());
+        tracing::Span::current().record("http.response.status_code", status.as_u16());
         tracing::Span::current().record("pipeline.status", response.status.as_str());
         Ok((status, Json(body)))
     }
